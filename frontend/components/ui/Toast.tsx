@@ -1,8 +1,16 @@
 "use client";
 
+import { AlertTriangle, CheckCircle2, Info, XCircle } from "lucide-react";
 import { createContext, useCallback, useContext, useRef, useState } from "react";
 
 type ToastKind = "success" | "error" | "warning" | "info";
+
+const KIND_ICONS: Record<ToastKind, React.ElementType> = {
+  success: CheckCircle2,
+  error: XCircle,
+  warning: AlertTriangle,
+  info: Info,
+};
 interface ToastItem {
   id: number;
   kind: ToastKind;
@@ -48,15 +56,19 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     <ToastContext.Provider value={api}>
       {children}
       <div className="fixed bottom-4 right-4 z-50 flex w-full max-w-sm flex-col gap-2">
-        {toasts.map((t) => (
-          <div
-            key={t.id}
-            role="status"
-            className={`rounded-lg border px-4 py-3 text-sm shadow-lg ${KIND_STYLES[t.kind]}`}
-          >
-            {t.message}
-          </div>
-        ))}
+        {toasts.map((t) => {
+          const Icon = KIND_ICONS[t.kind];
+          return (
+            <div
+              key={t.id}
+              role="status"
+              className={`flex items-start gap-2 rounded-lg border px-4 py-3 text-sm shadow-lg ${KIND_STYLES[t.kind]}`}
+            >
+              <Icon size={16} className="mt-0.5 shrink-0" />
+              <span>{t.message}</span>
+            </div>
+          );
+        })}
       </div>
     </ToastContext.Provider>
   );

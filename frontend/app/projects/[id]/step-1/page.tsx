@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { FileUp } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useRef } from "react";
 import { api, ApiError } from "@/lib/api";
@@ -19,7 +20,7 @@ export default function Step1Page() {
     mutationFn: (file: File) => api.uploadTemplate(id, file),
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: projectKey(id) });
-      toast.success(`✅ Loaded '${res.excel_filename}' — sheets found: ${res.sheet_names.join(", ")}`);
+      toast.success(`Loaded '${res.excel_filename}' — sheets found: ${res.sheet_names.join(", ")}`);
       if (fileInput.current) fileInput.current.value = "";
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to upload template."),
@@ -50,7 +51,7 @@ export default function Step1Page() {
             </>
           ) : (
             <>
-              <span className="text-3xl">📄</span>
+              <FileUp size={32} className="text-slate-400" />
               <span className="text-sm font-medium text-slate-700">Click to upload the Excel template (.xlsx)</span>
               <span className="text-xs text-slate-400">Formulas and formatting are preserved</span>
             </>

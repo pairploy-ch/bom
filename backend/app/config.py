@@ -15,9 +15,19 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY") or None
-OPENAI_MODEL = "gpt-4o-mini"
-OPENAI_TIMEOUT_SECONDS = 60
-OPENAI_MAX_RETRIES = 2
+# gpt-4o (not -mini) — the mini model was noticeably weaker at reading Thai
+# furniture/procurement text (PDF extraction + price matching), so this
+# defaults to the full model. Override via OPENAI_MODEL in .env if needed.
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+
+# Optional — when set, furniture-list extraction (Step 2) prefers Claude over
+# OpenAI, since it tends to read Thai text more accurately. Price matching
+# (Step 3) still always uses OpenAI. Leave unset to use OpenAI everywhere.
+ANTHROPIC_API_KEY: str | None = os.getenv("ANTHROPIC_API_KEY") or None
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
+
+AI_TIMEOUT_SECONDS = 60
+AI_MAX_RETRIES = 2
 
 # Deliberately NOT the original Streamlit app's bom_app_projects.db — that
 # file's `projects` table has a completely different (single flat row with

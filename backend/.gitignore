@@ -3,3 +3,10 @@ __pycache__/
 *.pyc
 .env
 bom_backend.db
+
+# TP Tankhun's license forbids redistributing the raw font file online
+# (only linking to its f0nt.com download page is allowed) — this repo is
+# public, so these must stay local-only. Download from
+# https://www.f0nt.com/release/tp-tankhun/ and drop them here to restore.
+app/assets/fonts/TPTankhun-Regular.ttf
+app/assets/fonts/TPTankhun-Bold.ttf

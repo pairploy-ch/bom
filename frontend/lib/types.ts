@@ -37,26 +37,29 @@ export const DEFAULT_COLUMN_MAPPING: ColumnMapping = {
   room_col: "B",
   item_col: "C",
   qty_col: "D",
-  custom_made_price_col: "G",
-  purchased_price_col: "N",
+  custom_made_price_col: "E",
+  purchased_price_col: "L",
   start_row: 5,
   generate_formulas: true,
   multiplier_anchor_row: 5,
-  formula_h_col: "H",
-  formula_i_col: "I",
-  formula_k_col: "K",
-  formula_j_col: "J",
-  formula_l_col: "L",
-  formula_m_col: "M",
-  formula_additional_item_col: "Q",
-  formula_purchase_compare_col: "R",
+  formula_h_col: "F",
+  formula_i_col: "G",
+  formula_k_col: "I",
+  formula_j_col: "H",
+  formula_l_col: "J",
+  formula_m_col: "K",
+  formula_additional_item_col: "M",
+  formula_purchase_compare_col: "N",
 };
 
 export interface FurnitureItem {
   room: string;
   item_name: string;
   quantity: number;
+  // Checked = kept going into Step 3's price matching; unchecked = cut out there.
   verified: boolean;
+  // Free-text size/material, e.g. "180x200cm, ไม้วีเนียร์" — optional.
+  spec: string;
 }
 
 export interface MappingRow {
@@ -69,6 +72,7 @@ export interface MappingRow {
   other_maker_price: number;
   supplier: string;
   order_type: OrderType;
+  spec: string;
   suspicious?: boolean;
 }
 
@@ -145,9 +149,22 @@ export interface PreviewRow {
   line_total: number;
 }
 
+export interface PreviewResponse {
+  rows: PreviewRow[];
+  warnings: string[];
+}
+
 export interface LoadingFactorResponse {
   loading_factor: number;
   pct_increase: number;
+  anchor_cell: string;
+  updated: boolean;
+  current_value: number | null;
+}
+
+export type MultiplierColumn = "i" | "m";
+
+export interface SetMultiplierResponse {
   anchor_cell: string;
   updated: boolean;
   current_value: number | null;
@@ -167,6 +184,39 @@ export interface ExportStatus {
 export interface RawTextSearchResult {
   bucket_label: string;
   matches: string[];
+}
+
+export interface ExportVersionMeta {
+  id: number;
+  filename: string;
+  created_at: string;
+}
+
+// ------------------------------------------------------- client quotation --
+
+export interface QuotationRow {
+  item_no: number;
+  floor: string;
+  room: string;
+  item_name: string;
+  quantity: number;
+  dk_work_price: number | null;
+  actual_price_purchase: number | null;
+  is_client_owned: boolean;
+  remark: string;
+  // Server-computed display label ("1"/"2"/... under 10DK's work, "A"/"B"/...
+  // under the purchase column, "Client's" for customer-owned rows) — also
+  // recomputed live on the frontend as rows are edited, see assignQuotationLabels.
+  label: string;
+}
+
+export interface QuotationPreview {
+  rows: QuotationRow[];
+  warnings: string[];
+  dk_work_subtotal: number;
+  purchase_subtotal: number;
+  vat: number;
+  grand_total: number;
 }
 
 export const BUCKET_LABELS = ["ALT", "P'May", "OTHER_MAKER", "PURCHASE"] as const;

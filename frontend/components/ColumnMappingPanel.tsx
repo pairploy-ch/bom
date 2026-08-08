@@ -1,5 +1,6 @@
 "use client";
 
+import { Settings } from "lucide-react";
 import { useColumnMapping } from "./ColumnMappingContext";
 import { Field, Input } from "./ui/primitives";
 
@@ -13,8 +14,8 @@ export function ColumnMappingPanel() {
 
   return (
     <details className="rounded-xl border border-slate-200 bg-white shadow-sm">
-      <summary className="cursor-pointer select-none px-5 py-3 text-sm font-semibold text-slate-700">
-        ⚙️ Excel Column Mapping
+      <summary className="flex cursor-pointer select-none items-center gap-2 px-5 py-3 text-sm font-semibold text-slate-700">
+        <Settings size={16} /> Excel Column Mapping
       </summary>
       <div className="border-t border-slate-100 px-5 py-4">
         <p className="mb-4 text-xs text-slate-500">

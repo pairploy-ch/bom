@@ -2,16 +2,21 @@ import type {
   ColumnMapping,
   ExportResponse,
   ExportStatus,
+  ExportVersionMeta,
   FurnitureExtractResponse,
   FurnitureItem,
   LoadingFactorResponse,
   MappingRow,
   MatchPricesResponse,
-  PreviewRow,
+  MultiplierColumn,
+  PreviewResponse,
   ProjectState,
   ProjectSummary,
   QuotationBucketMeta,
+  QuotationPreview,
+  QuotationRow,
   RawTextSearchResult,
+  SetMultiplierResponse,
   TemplateUploadResponse,
 } from "./types";
 
@@ -39,6 +44,21 @@ function json(body: unknown): RequestInit {
   return { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
+async function requestBlob(path: string, init: RequestInit): Promise<Blob> {
+  const res = await fetch(`${BASE}${path}`, init);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+    } catch {
+      // response wasn't JSON — keep statusText
+    }
+    throw new ApiError(detail || `Request failed (${res.status})`);
+  }
+  return res.blob();
+}
+
 // -------------------------------------------------------------- projects --
 
 export const api = {
@@ -51,6 +71,8 @@ export const api = {
   getProject: (id: string) => request<ProjectState>(`/projects/${id}`),
 
   deleteProject: (id: string) => request<void>(`/projects/${id}`, { method: "DELETE" }),
+
+  resetProject: (id: string) => request<ProjectState>(`/projects/${id}/reset`, { method: "POST" }),
 
   // ---------------------------------------------------------------- step 1 --
 
@@ -119,7 +141,7 @@ export const api = {
     }),
 
   preview: (id: string, sheetName: string, rows: MappingRow[], columnMapping: ColumnMapping) =>
-    request<PreviewRow[]>(
+    request<PreviewResponse>(
       `/projects/${id}/preview`,
       json({ sheet_name: sheetName, rows, column_mapping: columnMapping })
     ),
@@ -142,6 +164,19 @@ export const api = {
         column_mapping: columnMapping,
       })
     ),
+
+  setMultiplier: (
+    id: string,
+    sheetName: string,
+    column: MultiplierColumn,
+    value: number,
+    columnMapping: ColumnMapping
+  ) =>
+    request<SetMultiplierResponse>(`/projects/${id}/multiplier`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sheet_name: sheetName, column, value, column_mapping: columnMapping }),
+    }),
 
   updateBaseline: (id: string, value: number | null) =>
     request<{ baseline_furniture_value: number | null }>(`/projects/${id}/baseline`, {
@@ -176,4 +211,59 @@ export const api = {
     ),
 
   exportFileUrl: (id: string) => `${BASE}/projects/${id}/export/file`,
+
+  listExportVersions: (id: string) => request<ExportVersionMeta[]>(`/projects/${id}/exports`),
+
+  exportVersionFileUrl: (id: string, versionId: number) => `${BASE}/projects/${id}/exports/${versionId}/file`,
+
+  // --------------------------------------------------------- quotation doc --
+
+  previewQuotationFromProject: (id: string, sheetName: string, rows: MappingRow[], columnMapping: ColumnMapping) =>
+    request<QuotationPreview>(
+      `/projects/${id}/quotation-doc/preview`,
+      json({ sheet_name: sheetName, rows, column_mapping: columnMapping })
+    ),
+
+  inspectQuotationExcel: (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request<{ sheet_names: string[] }>("/quotation-doc/inspect-excel", { method: "POST", body: fd });
+  },
+
+  previewQuotationFromExcel: (file: File, sheetName: string) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("sheet_name", sheetName);
+    return request<QuotationPreview>("/quotation-doc/preview-from-excel", { method: "POST", body: fd });
+  },
+
+  downloadQuotationPdf: (payload: {
+    client_name: string;
+    project_name: string;
+    quotation_date: string;
+    rows: QuotationRow[];
+    deposit_deduction: number;
+    remarks: string;
+    grand_total_note: string;
+  }) => requestBlob("/quotation-doc/pdf", json(payload)),
+
+  downloadQuotationDocx: (payload: {
+    client_name: string;
+    project_name: string;
+    quotation_date: string;
+    rows: QuotationRow[];
+    deposit_deduction: number;
+    remarks: string;
+    grand_total_note: string;
+  }) => requestBlob("/quotation-doc/docx", json(payload)),
+
+  uploadCompanyLogo: (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request<{ updated: boolean }>("/quotation-doc/logo", { method: "PUT", body: fd });
+  },
+
+  // Cache-busted so a freshly-uploaded logo shows up immediately instead of
+  // the browser reusing a cached image at the same URL.
+  companyLogoUrl: () => `${BASE}/quotation-doc/logo?t=${Date.now()}`,
 };

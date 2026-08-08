@@ -41,6 +41,14 @@ def get_conn() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    """Adds `column` to `table` if it's missing — lets older DB files on disk
+    pick up new fields without needing a real migration tool."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(
@@ -67,7 +75,8 @@ def init_db() -> None:
                 room TEXT NOT NULL DEFAULT '',
                 item_name TEXT NOT NULL DEFAULT '',
                 quantity REAL NOT NULL DEFAULT 1,
-                verified INTEGER NOT NULL DEFAULT 0
+                verified INTEGER NOT NULL DEFAULT 0,
+                spec TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_furniture_project ON furniture_items(project_id, position);
 
@@ -83,7 +92,8 @@ def init_db() -> None:
                 pmay_price REAL NOT NULL DEFAULT 0,
                 other_maker_price REAL NOT NULL DEFAULT 0,
                 supplier TEXT NOT NULL DEFAULT '',
-                order_type TEXT NOT NULL DEFAULT '{default_order_type}'
+                order_type TEXT NOT NULL DEFAULT '{default_order_type}',
+                spec TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_mapping_project ON mapping_rows(project_id, position);
 
@@ -102,8 +112,33 @@ def init_db() -> None:
                 pdf_bytes BLOB NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_pdfs_project ON quotation_pdfs(project_id, bucket_label);
+
+            -- One row per completed export, so past versions stay downloadable
+            -- (kept separate from projects.final_excel_bytes, which is just a
+            -- convenience pointer to the LATEST version for the stale-check).
+            CREATE TABLE IF NOT EXISTS export_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                filename TEXT NOT NULL,
+                excel_bytes BLOB NOT NULL,
+                source_hash TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_export_versions_project ON export_versions(project_id, created_at);
+
+            -- Single global row (id=1) — the company logo used on every
+            -- generated quotation PDF/Word doc, uploaded once and reused,
+            -- not tied to any one project.
+            CREATE TABLE IF NOT EXISTS app_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                company_logo_bytes BLOB,
+                company_logo_content_type TEXT
+            );
             """.format(default_order_type=DEFAULT_ORDER_TYPE)
         )
+        # Backfills columns added after a DB file may already exist on disk.
+        _ensure_column(conn, "furniture_items", "spec", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "mapping_rows", "spec", "TEXT NOT NULL DEFAULT ''")
 
 
 # ---------------------------------------------------------------- projects --
@@ -145,6 +180,38 @@ def get_project_by_name(name: str) -> sqlite3.Row | None:
 def delete_project(project_id: str) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+
+
+def reset_project(project_id: str) -> None:
+    """
+    Wipes everything under this project back to a just-created state — same
+    id/name (so the URL and project-list entry stay put), but the template,
+    furniture list, mapping rows, quotation texts/PDFs, and any exports are
+    all cleared. The equivalent of the original app's "Reset All", which
+    wiped the whole Streamlit session.
+    """
+    with get_conn() as conn:
+        conn.execute("DELETE FROM furniture_items WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM mapping_rows WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM quotation_texts WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM quotation_pdfs WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM export_versions WHERE project_id = ?", (project_id,))
+        conn.execute(
+            """
+            UPDATE projects
+            SET excel_filename = NULL,
+                excel_bytes = NULL,
+                sheet_names = NULL,
+                target_sheet_name = NULL,
+                alt_batch_info = NULL,
+                baseline_furniture_value = NULL,
+                final_excel_bytes = NULL,
+                final_excel_source_hash = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (_now(), project_id),
+        )
 
 
 def update_excel_template(project_id: str, filename: str, file_bytes: bytes, sheet_names: list[str]) -> None:
@@ -207,8 +274,8 @@ def replace_furniture_items(project_id: str, items: list[dict[str, Any]]) -> Non
         conn.execute("DELETE FROM furniture_items WHERE project_id = ?", (project_id,))
         conn.executemany(
             """
-            INSERT INTO furniture_items (project_id, position, room, item_name, quantity, verified)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO furniture_items (project_id, position, room, item_name, quantity, verified, spec)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -218,6 +285,7 @@ def replace_furniture_items(project_id: str, items: list[dict[str, Any]]) -> Non
                     str(item.get("item_name") or ""),
                     float(item.get("quantity") or 0),
                     1 if item.get("verified") else 0,
+                    str(item.get("spec") or ""),
                 )
                 for i, item in enumerate(items)
             ],
@@ -228,7 +296,7 @@ def replace_furniture_items(project_id: str, items: list[dict[str, Any]]) -> Non
 def get_furniture_items(project_id: str) -> list[dict[str, Any]]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT room, item_name, quantity, verified FROM furniture_items "
+            "SELECT room, item_name, quantity, verified, spec FROM furniture_items "
             "WHERE project_id = ? ORDER BY position",
             (project_id,),
         ).fetchall()
@@ -238,6 +306,7 @@ def get_furniture_items(project_id: str) -> list[dict[str, Any]]:
             "item_name": r["item_name"],
             "quantity": r["quantity"],
             "verified": bool(r["verified"]),
+            "spec": r["spec"],
         }
         for r in rows
     ]
@@ -252,8 +321,8 @@ def replace_mapping_rows(project_id: str, rows: list[dict[str, Any]]) -> None:
             """
             INSERT INTO mapping_rows
                 (project_id, position, room, item_name, quantity, unit_price,
-                 alt_price, pmay_price, other_maker_price, supplier, order_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 alt_price, pmay_price, other_maker_price, supplier, order_type, spec)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -268,6 +337,7 @@ def replace_mapping_rows(project_id: str, rows: list[dict[str, Any]]) -> None:
                     float(row.get("other_maker_price") or 0),
                     str(row.get("supplier") or ""),
                     str(row.get("order_type") or DEFAULT_ORDER_TYPE),
+                    str(row.get("spec") or ""),
                 )
                 for i, row in enumerate(rows)
             ],
@@ -280,7 +350,7 @@ def get_mapping_rows(project_id: str) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT room, item_name, quantity, unit_price, alt_price, pmay_price,
-                   other_maker_price, supplier, order_type
+                   other_maker_price, supplier, order_type, spec
             FROM mapping_rows WHERE project_id = ? ORDER BY position
             """,
             (project_id,),
@@ -340,3 +410,65 @@ def get_quotation_pdf_bytes(pdf_id: int) -> tuple[str, bytes] | None:
             "SELECT filename, pdf_bytes FROM quotation_pdfs WHERE id = ?", (pdf_id,)
         ).fetchone()
     return (row["filename"], row["pdf_bytes"]) if row else None
+
+
+# ---------------------------------------------------------------- exports --
+# History of every completed export, so a project can be "saved" across many
+# timestamped versions and any past one re-downloaded later, instead of only
+# ever keeping the single latest file (which is still tracked separately on
+# `projects.final_excel_bytes` for the cheap stale-download check).
+
+def save_export_version(project_id: str, filename: str, file_bytes: bytes, source_hash: str) -> dict[str, Any]:
+    now = _now()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO export_versions (project_id, filename, excel_bytes, source_hash, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (project_id, filename, file_bytes, source_hash, now),
+        )
+        version_id = cur.lastrowid
+    return {"id": version_id, "filename": filename, "created_at": now}
+
+
+def list_export_versions(project_id: str) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, filename, created_at FROM export_versions WHERE project_id = ? ORDER BY created_at DESC",
+            (project_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_export_version_bytes(version_id: int) -> tuple[str, bytes] | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT filename, excel_bytes FROM export_versions WHERE id = ?", (version_id,)
+        ).fetchone()
+    return (row["filename"], row["excel_bytes"]) if row else None
+
+
+# ------------------------------------------------------------- app settings --
+
+def set_company_logo(logo_bytes: bytes, content_type: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings (id, company_logo_bytes, company_logo_content_type)
+            VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET company_logo_bytes = excluded.company_logo_bytes,
+                                           company_logo_content_type = excluded.company_logo_content_type
+            """,
+            (logo_bytes, content_type),
+        )
+
+
+def get_company_logo() -> tuple[bytes, str] | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT company_logo_bytes, company_logo_content_type FROM app_settings WHERE id = 1"
+        ).fetchone()
+    if row is None or row["company_logo_bytes"] is None:
+        return None
+    return (row["company_logo_bytes"], row["company_logo_content_type"] or "image/png")

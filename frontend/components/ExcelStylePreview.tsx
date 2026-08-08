@@ -1,7 +1,13 @@
+import { Fragment } from "react";
 import type { PreviewRow } from "@/lib/types";
 
 const fmt = (v: number | undefined, decimals = 0) =>
   v === undefined || v === null ? "" : v.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+
+// "[Price Not Found]" is an internal flag for the review-and-edit table
+// (step-3/page.tsx) — this preview is meant to mirror the final Excel
+// output, so it's stripped from the displayed name here only.
+const displayItemName = (name: string) => name.replace(/\s*\[Price Not Found\]\s*/g, " ").trim();
 
 const HEADERS = [
   "Supplier",
@@ -66,19 +72,19 @@ export function ExcelStylePreview({ rows }: { rows: PreviewRow[] }) {
         </thead>
         <tbody>
           {planned.map(({ row: r, isNewRoom, itemNo, stripe }, i) => (
-            <>
+            <Fragment key={i}>
               {isNewRoom && (
-                <tr key={`room-${i}`} className="bg-slate-900 text-white">
+                <tr className="bg-slate-900 text-white">
                   <td className="border border-slate-300 px-2 py-1.5">Supplier</td>
                   <td className="border border-slate-300 px-2 py-1.5 text-left" colSpan={12}>
                     {r.room}
                   </td>
                 </tr>
               )}
-              <tr key={i} className={stripe ? "bg-white" : "bg-emerald-50"}>
+              <tr className={stripe ? "bg-white" : "bg-emerald-50"}>
                 <td className="border border-slate-300 px-2 py-1.5 text-left">{r.supplier}</td>
                 <td className="border border-slate-300 px-2 py-1.5 text-right">{itemNo}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-left">{r.item_name}</td>
+                <td className="border border-slate-300 px-2 py-1.5 text-left">{displayItemName(r.item_name)}</td>
                 <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.quantity)}</td>
                 <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.g_cost, 2)}</td>
                 <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.h_loading, 2)}</td>
@@ -90,7 +96,7 @@ export function ExcelStylePreview({ rows }: { rows: PreviewRow[] }) {
                 <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.n_actual_price, 2)}</td>
                 <td className="border border-slate-300 px-2 py-1.5 text-left text-slate-500">{r.auto_note}</td>
               </tr>
-            </>
+            </Fragment>
           ))}
         </tbody>
       </table>

@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,15 +23,21 @@ from .logic import (
     ColumnMapping,
     LogicError,
     _current_export_source_hash,
+    assign_quotation_labels,
+    build_quotation_rows,
     compute_price_preview,
     extract_furniture_list,
     extract_text_from_pdf,
     flag_suspicious_prices,
+    generate_quotation_docx,
+    generate_quotation_pdf,
+    get_anthropic_client,
     get_openai_client,
     group_items_by_room,
     load_workbook_from_bytes,
     match_prices_bucket,
     merge_bucket_results,
+    parse_exported_excel_for_quotation,
     read_anchor_value,
     write_mapping_to_excel,
 )
@@ -39,6 +46,7 @@ from .schemas import (
     ColumnMappingIn,
     ExportRequest,
     ExportStatus,
+    ExportVersionMeta,
     FurnitureExtractResponse,
     FurnitureItem,
     FurnitureListReplace,
@@ -52,8 +60,13 @@ from .schemas import (
     ProjectState,
     ProjectSummary,
     QuotationBucketMeta,
+    QuotationBuildRequest,
+    QuotationPdfRequest,
+    QuotationPreview,
     QuotationTextsResponse,
     RawTextSearchResult,
+    SetMultiplierRequest,
+    SetMultiplierResponse,
     TemplateUploadResponse,
 )
 
@@ -84,6 +97,17 @@ def _logic_error_handler(_request, exc: LogicError):
 
 def _col_map(m: ColumnMappingIn) -> ColumnMapping:
     return ColumnMapping(**m.model_dump())
+
+
+def _content_disposition(disposition: str, filename: str) -> str:
+    """
+    HTTP header values must be latin-1 — filenames here often contain Thai
+    text (from the uploaded template's original name), which isn't. Falls
+    back to an ASCII-only `filename=` for old clients and adds the RFC
+    5987-encoded `filename*=` (what browsers actually use) for the rest.
+    """
+    ascii_filename = filename.encode("ascii", "ignore").decode() or "download.xlsx"
+    return f"{disposition}; filename=\"{ascii_filename}\"; filename*=UTF-8''{quote(filename)}"
 
 
 def _get_project_or_404(project_id: str):
@@ -117,7 +141,15 @@ def _project_state(project_id: str) -> ProjectState:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "openai_configured": get_openai_client() is not None}
+    openai_ok = get_openai_client() is not None
+    anthropic_ok = get_anthropic_client() is not None
+    return {
+        "status": "ok",
+        "openai_configured": openai_ok,
+        "anthropic_configured": anthropic_ok,
+        # Step 2 (furniture-list extraction) prefers Claude when available.
+        "extraction_provider": "anthropic" if anthropic_ok else ("openai" if openai_ok else None),
+    }
 
 
 # ---------------------------------------------------------------- projects --
@@ -146,6 +178,13 @@ def get_project(project_id: str):
 def delete_project(project_id: str):
     _get_project_or_404(project_id)
     db.delete_project(project_id)
+
+
+@app.post("/api/projects/{project_id}/reset", response_model=ProjectState)
+def reset_project(project_id: str):
+    _get_project_or_404(project_id)
+    db.reset_project(project_id)
+    return _project_state(project_id)
 
 
 # ------------------------------------------------------------------ step 1 --
@@ -178,15 +217,14 @@ async def extract_furniture(project_id: str, file: UploadFile = File(...)):
     if row["excel_bytes"] is None:
         raise HTTPException(400, "Complete Step 1 (upload the Excel template) first.")
 
-    client = get_openai_client()
-    if client is None:
-        raise HTTPException(503, "OPENAI_API_KEY is not configured on the server.")
+    if get_anthropic_client() is None and get_openai_client() is None:
+        raise HTTPException(503, "No AI provider configured — set ANTHROPIC_API_KEY or OPENAI_API_KEY on the server.")
 
     file_bytes = await file.read()
     pdf_text, warning = extract_text_from_pdf(file_bytes)
-    items = extract_furniture_list(client, pdf_text)
+    items = extract_furniture_list(pdf_text)
     for item in items:
-        item.setdefault("verified", False)
+        item.setdefault("verified", True)
 
     db.replace_furniture_items(project_id, items)
     return FurnitureExtractResponse(items=items, warning=warning)
@@ -229,7 +267,17 @@ async def match_prices(
     if client is None:
         raise HTTPException(503, "OPENAI_API_KEY is not configured on the server.")
 
-    clean_furniture_list = [item for item in furniture_list if (item.get("item_name") or "").strip()]
+    # Only items still checked ("verified") in Step 2 are carried into Step 3 —
+    # unchecking an item is how the user says "I don't want this one," so it's
+    # cut out here rather than being matched/priced/exported.
+    clean_furniture_list = [
+        item for item in furniture_list if (item.get("item_name") or "").strip() and item.get("verified")
+    ]
+    if not clean_furniture_list:
+        raise HTTPException(
+            400,
+            "ยังไม่ได้ติ๊กถูกรายการใดเลยใน Step 2 — กรุณาเลือก (ติ๊กถูก) อย่างน้อย 1 รายการก่อนจับคู่ราคา",
+        )
     indexed_furniture_list = [{**item, "index": i} for i, item in enumerate(clean_furniture_list)]
 
     buckets: list[tuple[str, list[UploadFile], str | None]] = [
@@ -327,7 +375,7 @@ def get_quotation_pdf_file(project_id: str, pdf_id: int):
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        headers={"Content-Disposition": _content_disposition("inline", filename)},
     )
 
 
@@ -390,6 +438,43 @@ def apply_loading_factor(project_id: str, body: LoadingFactorRequest):
     )
 
 
+@app.put("/api/projects/{project_id}/multiplier", response_model=SetMultiplierResponse)
+def set_multiplier(project_id: str, body: SetMultiplierRequest):
+    """
+    Writes a value directly into the I or M anchor cell — unlike Loading
+    Factor (H), these have no per-project sub-formula; the caller already
+    knows the number (e.g. computed from a %+VAT% pair, or typed directly).
+    """
+    row = _get_project_or_404(project_id)
+    if row["excel_bytes"] is None:
+        raise HTTPException(400, "Upload the Excel template (Step 1) first.")
+
+    col_map = _col_map(body.column_mapping)
+    col_letter = col_map.formula_i_col if body.column == "i" else col_map.formula_m_col
+
+    wb = load_workbook_from_bytes(row["excel_bytes"])
+    if body.sheet_name not in wb.sheetnames:
+        raise HTTPException(422, f"'{body.sheet_name}' is not a sheet in this workbook.")
+    ws = wb[body.sheet_name]
+
+    current_value = read_anchor_value(ws, col_letter, col_map.multiplier_anchor_row)
+    new_value = round(body.value, 4)
+    anchor_cell = f"{col_letter}{col_map.multiplier_anchor_row}"
+
+    updated = current_value is None or abs(current_value - new_value) > 0.00005
+    if updated:
+        ws[anchor_cell] = new_value
+        out = io.BytesIO()
+        wb.save(out)
+        db.update_excel_bytes(project_id, out.getvalue())
+
+    return SetMultiplierResponse(
+        anchor_cell=anchor_cell,
+        updated=updated,
+        current_value=new_value if updated else current_value,
+    )
+
+
 @app.patch("/api/projects/{project_id}/baseline")
 def update_baseline(project_id: str, body: BaselineUpdate):
     _get_project_or_404(project_id)
@@ -414,6 +499,8 @@ def export_excel(project_id: str, body: ExportRequest):
     )
     source_hash = _current_export_source_hash(row["excel_bytes"], rows)
     db.update_final_export(project_id, result_bytes, source_hash)
+    filename = f"completed_{row['excel_filename'] or 'BOM.xlsx'}"
+    db.save_export_version(project_id, filename, result_bytes, source_hash)
     if body.baseline_furniture_value is not None:
         db.update_baseline_furniture_value(project_id, body.baseline_furniture_value)
     return {"warnings": warnings, "download_url": f"/api/projects/{project_id}/export/file"}
@@ -442,8 +529,171 @@ def download_export(project_id: str):
     return Response(
         content=row["final_excel_bytes"],
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": _content_disposition("attachment", filename)},
     )
+
+
+# Every successful export/{project_id} call above also appends a timestamped
+# row here, so past versions stay downloadable even after a newer export.
+@app.get("/api/projects/{project_id}/exports", response_model=list[ExportVersionMeta])
+def list_export_versions(project_id: str):
+    _get_project_or_404(project_id)
+    return db.list_export_versions(project_id)
+
+
+@app.get("/api/projects/{project_id}/exports/{version_id}/file")
+def download_export_version(project_id: str, version_id: int):
+    _get_project_or_404(project_id)
+    found = db.get_export_version_bytes(version_id)
+    if found is None:
+        raise HTTPException(404, "Export version not found")
+    filename, file_bytes = found
+    return Response(
+        content=file_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": _content_disposition("attachment", filename)},
+    )
+
+
+# ------------------------------------------------------- client quotation --
+# A distinct "quotation-doc" segment, since /projects/{id}/quotations* is
+# already the Step-3 supplier-PDF-upload feature. Nothing here is persisted
+# server-side — both paths (existing project vs. uploaded Excel) converge on
+# the same transient QuotationRow list, only ever sent back to the client.
+
+def _quotation_totals(rows: list[dict[str, Any]]) -> tuple[float, float, float, float]:
+    dk_work_subtotal = sum(
+        (r.get("dk_work_price") or 0) * (r.get("quantity") or 0)
+        for r in rows
+        if not r.get("is_client_owned") and r.get("dk_work_price") is not None
+    )
+    purchase_subtotal = sum(
+        (r.get("actual_price_purchase") or 0) * (r.get("quantity") or 0)
+        for r in rows
+        if not r.get("is_client_owned") and r.get("actual_price_purchase") is not None
+    )
+    vat = dk_work_subtotal * 0.07
+    return dk_work_subtotal, purchase_subtotal, vat, dk_work_subtotal + vat
+
+
+@app.post("/api/projects/{project_id}/quotation-doc/preview", response_model=QuotationPreview)
+def preview_quotation_from_project(project_id: str, body: QuotationBuildRequest):
+    row = _get_project_or_404(project_id)
+    if row["excel_bytes"] is None:
+        raise HTTPException(400, "Upload the Excel template (Step 1) first.")
+    rows = [r.model_dump(exclude={"suspicious"}) for r in body.rows]
+    preview = compute_price_preview(row["excel_bytes"], rows, _col_map(body.column_mapping), body.sheet_name)
+    quotation_rows, row_warnings = build_quotation_rows(preview["rows"])
+    dk_work_subtotal, purchase_subtotal, vat, grand_total = _quotation_totals(quotation_rows)
+    return QuotationPreview(
+        rows=quotation_rows,
+        warnings=preview["warnings"] + row_warnings,
+        dk_work_subtotal=dk_work_subtotal,
+        purchase_subtotal=purchase_subtotal,
+        vat=vat,
+        grand_total=grand_total,
+    )
+
+
+@app.post("/api/quotation-doc/inspect-excel")
+async def inspect_quotation_excel(file: UploadFile = File(...)):
+    file_bytes = await file.read()
+    wb = load_workbook_from_bytes(file_bytes)
+    return {"sheet_names": wb.sheetnames}
+
+
+@app.post("/api/quotation-doc/preview-from-excel", response_model=QuotationPreview)
+async def preview_quotation_from_excel(file: UploadFile = File(...), sheet_name: str = Form(...)):
+    file_bytes = await file.read()
+    parsed_rows, parse_warnings = parse_exported_excel_for_quotation(file_bytes, sheet_name, ColumnMapping())
+    quotation_rows, row_warnings = build_quotation_rows(parsed_rows)
+    dk_work_subtotal, purchase_subtotal, vat, grand_total = _quotation_totals(quotation_rows)
+    return QuotationPreview(
+        rows=quotation_rows,
+        warnings=parse_warnings + row_warnings,
+        dk_work_subtotal=dk_work_subtotal,
+        purchase_subtotal=purchase_subtotal,
+        vat=vat,
+        grand_total=grand_total,
+    )
+
+
+def _rows_with_fresh_labels(body_rows: list[Any]) -> list[dict[str, Any]]:
+    """
+    Recomputes each row's display label from scratch before rendering — the
+    browser may have edited prices / toggled "Client's" since the row list
+    was first built, which shifts which numeric/lettered sequence a row
+    belongs to (see assign_quotation_labels).
+    """
+    rows = [r.model_dump() for r in body_rows]
+    for row, label in zip(rows, assign_quotation_labels(rows)):
+        row["label"] = label
+    return rows
+
+
+@app.post("/api/quotation-doc/pdf")
+def download_quotation_pdf(body: QuotationPdfRequest):
+    rows = _rows_with_fresh_labels(body.rows)
+    logo = db.get_company_logo()
+    pdf_bytes = generate_quotation_pdf(
+        rows,
+        body.client_name,
+        body.project_name,
+        body.quotation_date,
+        logo_bytes=logo[0] if logo else None,
+        deposit_deduction=body.deposit_deduction,
+        remarks=body.remarks,
+        grand_total_note=body.grand_total_note,
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": _content_disposition("attachment", "ใบเสนอราคา.pdf")},
+    )
+
+
+@app.post("/api/quotation-doc/docx")
+def download_quotation_docx(body: QuotationPdfRequest):
+    rows = _rows_with_fresh_labels(body.rows)
+    logo = db.get_company_logo()
+    docx_bytes = generate_quotation_docx(
+        rows,
+        body.client_name,
+        body.project_name,
+        body.quotation_date,
+        logo_bytes=logo[0] if logo else None,
+        deposit_deduction=body.deposit_deduction,
+        remarks=body.remarks,
+        grand_total_note=body.grand_total_note,
+    )
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": _content_disposition("attachment", "ใบเสนอราคา.docx")},
+    )
+
+
+@app.put("/api/quotation-doc/logo")
+async def upload_company_logo(file: UploadFile = File(...)):
+    """
+    Uploaded once, reused on every quotation PDF/Word doc generated
+    afterward — a single global asset, not tied to any one project.
+    """
+    file_bytes = await file.read()
+    content_type = file.content_type or "image/png"
+    if not content_type.startswith("image/"):
+        raise HTTPException(422, "Logo must be an image file (PNG/JPEG).")
+    db.set_company_logo(file_bytes, content_type)
+    return {"updated": True}
+
+
+@app.get("/api/quotation-doc/logo")
+def get_company_logo():
+    logo = db.get_company_logo()
+    if logo is None:
+        raise HTTPException(404, "No logo uploaded yet.")
+    logo_bytes, content_type = logo
+    return Response(content=logo_bytes, media_type=content_type)
 
 
 # Exposed for reference by the frontend when building upload UI (which

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Calculator, FileText, Sofa } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -43,19 +44,41 @@ export default function HomePage() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-6 py-12">
-      <header className="mb-8">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900">🛋️ Furniture BOM &amp; Price Mapping</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          Upload a BOM template, extract a furniture list, match supplier prices — all saved server-side, so a
-          refresh (or a different browser) always picks up right where you left off.
-        </p>
+    <div className="w-full px-6 py-12">
+      <header className="mb-8 flex items-center gap-3">
+        <Sofa className="text-slate-700" size={28} />
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Furniture BOM &amp; Price Mapping</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            Upload a BOM template, extract a furniture list, match supplier prices — all saved server-side, so a
+            refresh (or a different browser) always picks up right where you left off.
+          </p>
+        </div>
       </header>
+
+      <div className="mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Card className="border-indigo-200 bg-indigo-50/50 px-5 py-4">
+          <p className="flex items-center gap-2 font-semibold text-slate-900">
+            <Calculator size={16} /> เมนูคำนวณราคา
+          </p>
+          <p className="mt-0.5 text-xs text-slate-500">สร้าง/แก้ไขโปรเจกต์ ดึงราคา คำนวณ BOM — เนื้อหาด้านล่างนี้ทั้งหมด</p>
+        </Card>
+        <Link href="/quotation">
+          <Card className="h-full px-5 py-4 transition-colors hover:border-indigo-300 hover:bg-indigo-50/40">
+            <p className="flex items-center gap-2 font-semibold text-slate-900">
+              <FileText size={16} /> เมนูใบเสนอราคา
+            </p>
+            <p className="mt-0.5 text-xs text-slate-500">
+              ดึงราคาที่คำนวณแล้วมาตัดคอลัมน์ภายในออก แล้ว export เป็น PDF ให้ลูกค้า
+            </p>
+          </Card>
+        </Link>
+      </div>
 
       {health.data && !health.data.openai_configured && (
         <div className="mb-6">
           <Alert tone="warning">
-            ⚠️ <strong>OPENAI_API_KEY</strong> is not configured on the backend. Steps 2 and 3 (AI extraction /
+            <strong>OPENAI_API_KEY</strong> is not configured on the backend. Steps 2 and 3 (AI extraction /
             price matching) will not work until it&apos;s set — see <code>backend/.env.example</code>.
           </Alert>
         </div>

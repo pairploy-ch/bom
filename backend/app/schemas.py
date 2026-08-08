@@ -18,26 +18,32 @@ class ColumnMappingIn(BaseModel):
     room_col: str = "B"
     item_col: str = "C"
     qty_col: str = "D"
-    custom_made_price_col: str = "G"
-    purchased_price_col: str = "N"
+    custom_made_price_col: str = "E"
+    purchased_price_col: str = "L"
     start_row: int = 5
     generate_formulas: bool = True
     multiplier_anchor_row: int = 5
-    formula_h_col: str = "H"
-    formula_i_col: str = "I"
-    formula_k_col: str = "K"
-    formula_j_col: str = "J"
-    formula_l_col: str = "L"
-    formula_m_col: str = "M"
-    formula_additional_item_col: str = "Q"
-    formula_purchase_compare_col: str = "R"
+    formula_h_col: str = "F"
+    formula_i_col: str = "G"
+    formula_k_col: str = "I"
+    formula_j_col: str = "H"
+    formula_l_col: str = "J"
+    formula_m_col: str = "K"
+    formula_additional_item_col: str = "M"
+    formula_purchase_compare_col: str = "N"
 
 
 class FurnitureItem(BaseModel):
     room: str = ""
     item_name: str = ""
     quantity: float = 1
-    verified: bool = False
+    # True = keep this item going into Step 3's price matching; False = excluded
+    # there entirely. Defaults True so a freshly-extracted/added item counts
+    # unless the user explicitly unchecks it.
+    verified: bool = True
+    # Free-text size/material/dimensions, e.g. "180x200cm, ไม้วีเนียร์" — either
+    # AI-extracted from the PDF or typed in manually. Optional.
+    spec: str = ""
 
 
 class MappingRow(BaseModel):
@@ -50,6 +56,7 @@ class MappingRow(BaseModel):
     other_maker_price: float = 0
     supplier: str = ""
     order_type: OrderType = "จัดซื้อ (ราคาจริง ไม่บวกกำไร)"
+    spec: str = ""
     # Response-only — recomputed server-side on every read (SUSPICIOUS_PRICE_THRESHOLD
     # rule from the original app), ignored if sent by the client.
     suspicious: bool = False
@@ -147,6 +154,26 @@ class BaselineUpdate(BaseModel):
     value: float | None = None
 
 
+class SetMultiplierRequest(BaseModel):
+    """
+    Directly writes a number into the I or M anchor cell (the "+5%+VAT7%"
+    multiplier and the 10DK profit multiplier respectively) — these are
+    fixed business constants that must already live in the uploaded Excel
+    template, unlike H (the Loading Factor), which is computed per-project
+    from the ALT quotation's own numbers.
+    """
+    sheet_name: str
+    column: Literal["i", "m"]
+    value: float
+    column_mapping: ColumnMappingIn = ColumnMappingIn()
+
+
+class SetMultiplierResponse(BaseModel):
+    anchor_cell: str
+    updated: bool
+    current_value: float | None = None
+
+
 class ExportRequest(BaseModel):
     sheet_name: str
     rows: list[MappingRow]
@@ -169,3 +196,62 @@ class RawTextSearchResult(BaseModel):
 
 class QuotationTextsResponse(BaseModel):
     texts: dict[str, str]
+
+
+class ExportVersionMeta(BaseModel):
+    id: int
+    filename: str
+    created_at: str
+
+
+# ------------------------------------------------------- client quotation --
+
+class QuotationRow(BaseModel):
+    item_no: int
+    floor: str = ""
+    room: str = ""
+    item_name: str = ""
+    quantity: float = 1
+    dk_work_price: float | None = None
+    actual_price_purchase: float | None = None
+    # Customer-supplied item — never priced, rendered as a "Client's" row
+    # (gray band, no item number, blank price cells) per the reference
+    # template. Never set by the pricing pipeline; only by manual edit.
+    is_client_owned: bool = False
+    remark: str = ""
+    # Server-computed display label ("1", "2", ... for rows priced under
+    # 10DK's work; "A", "B", ... for rows priced under the purchase column;
+    # "Client's" for customer-owned rows) — always recomputed from the
+    # current row list right before use, so any value sent by the client is
+    # ignored on the way back in.
+    label: str = ""
+
+
+class QuotationBuildRequest(BaseModel):
+    sheet_name: str
+    rows: list[MappingRow]
+    column_mapping: ColumnMappingIn = ColumnMappingIn()
+
+
+class QuotationPreview(BaseModel):
+    rows: list[QuotationRow]
+    warnings: list[str] = []
+    dk_work_subtotal: float
+    purchase_subtotal: float
+    vat: float
+    grand_total: float
+
+
+class QuotationPdfRequest(BaseModel):
+    client_name: str = ""
+    project_name: str = ""
+    quotation_date: str = ""
+    rows: list[QuotationRow]
+    # Deducted from the 10DK's-work grand total only (e.g. an already-paid
+    # design deposit) — matches the reference template's "หักค่ามัดจำออกแบบ" row.
+    deposit_deduction: float = 0
+    # Free-text bullet lines rendered under a "Remarks:" heading at the very
+    # end of the document, one per line (e.g. "ราคาดังกล่าว ไม่รวมฟูกที่นอน").
+    remarks: str = ""
+    # Small italic note shown next to the Grand Total row.
+    grand_total_note: str = "(ไม่รวมรายการ TBC ค่าขนส่ง, ค่าประกอบและค่าติดตั้ง)"
