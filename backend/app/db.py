@@ -105,10 +105,25 @@ def init_db() -> None:
             -- Manual "done" toggles for the sidebar's workflow checklist
             -- (คำนวณราคา / ใบราคา) — user-set, not derived from any other
             -- column, since neither step has a reliable auto-detected
-            -- "finished" signal (e.g. the quotation page never persists
-            -- anything, it's regenerated fresh from mapping_rows every time).
+            -- "finished" signal.
             ALTER TABLE houses ADD COLUMN IF NOT EXISTS workflow_calc_done BOOLEAN NOT NULL DEFAULT FALSE;
             ALTER TABLE houses ADD COLUMN IF NOT EXISTS workflow_quotation_done BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE houses ADD COLUMN IF NOT EXISTS workflow_contract_done BOOLEAN NOT NULL DEFAULT FALSE;
+
+            -- Scalar fill-in-the-blank fields for the "ทำสัญญา" contract
+            -- form tab — one JSON object per house, same shape as
+            -- ContractDetails in schemas.py. Kept as a single blob (like
+            -- alt_batch_info) since it's a fixed set of scalar fields, not
+            -- a repeating list.
+            ALTER TABLE houses ADD COLUMN IF NOT EXISTS contract_details TEXT;
+
+            -- Saved "ใบราคา" (quotation preview) state — client/project/date
+            -- fields + the user's in-place edited rows, one JSON object per
+            -- house (shape: QuotationDetails in schemas.py). Previously the
+            -- quotation page never persisted anything (regenerated fresh
+            -- from mapping_rows on every visit), so in-table edits were lost
+            -- on reload — this is the explicit "บันทึก" checkpoint for that.
+            ALTER TABLE houses ADD COLUMN IF NOT EXISTS quotation_details TEXT;
 
             CREATE TABLE IF NOT EXISTS furniture_items (
                 id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -154,6 +169,34 @@ def init_db() -> None:
                 pdf_bytes BYTEA NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_pdfs_house ON quotation_pdfs(house_id, bucket_label);
+
+            -- Ordered pages for the "ทำสัญญา" contract's "เอกสารแนบ" tab —
+            -- each row is one flattened PNG (pasted screenshot + drawn
+            -- annotations, merged client-side before upload), analogous to
+            -- quotation_pdfs above but ordered by `position` (page order in
+            -- the final document) instead of grouped by supplier bucket.
+            CREATE TABLE IF NOT EXISTS contract_attachments (
+                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                house_id TEXT NOT NULL REFERENCES houses(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                image_bytes BYTEA NOT NULL,
+                content_type TEXT NOT NULL DEFAULT 'image/png'
+            );
+            CREATE INDEX IF NOT EXISTS idx_contract_attachments_house ON contract_attachments(house_id, position);
+
+            -- Per-page metadata driving the auto "หมายเหตุ" footnote printed
+            -- bottom-right on this page in the combined contract PDF (see
+            -- logic.py's _ATTACHMENT_REMARKS / generate_contract_pdf).
+            -- attachment_type is one of '', 'plan', 'perspective',
+            -- 'furniture_list'; item_range/reference_note only apply to
+            -- 'furniture_list' (the "ลำดับที่ 1-27" / "(10)" blanks in that
+            -- type's footnote).
+            ALTER TABLE contract_attachments ADD COLUMN IF NOT EXISTS attachment_type TEXT NOT NULL DEFAULT '';
+            ALTER TABLE contract_attachments ADD COLUMN IF NOT EXISTS floor TEXT NOT NULL DEFAULT '';
+            ALTER TABLE contract_attachments ADD COLUMN IF NOT EXISTS zone TEXT NOT NULL DEFAULT '';
+            ALTER TABLE contract_attachments ADD COLUMN IF NOT EXISTS item_range TEXT NOT NULL DEFAULT '';
+            ALTER TABLE contract_attachments ADD COLUMN IF NOT EXISTS reference_note TEXT NOT NULL DEFAULT '';
 
             -- One row per completed export, so a house can be "saved" across many
             -- timestamped versions and any past one re-downloaded later, instead of only
@@ -318,6 +361,7 @@ def reset_house(house_id: str) -> None:
         conn.execute("DELETE FROM quotation_texts WHERE house_id = %s", (house_id,))
         conn.execute("DELETE FROM quotation_pdfs WHERE house_id = %s", (house_id,))
         conn.execute("DELETE FROM export_versions WHERE house_id = %s", (house_id,))
+        conn.execute("DELETE FROM contract_attachments WHERE house_id = %s", (house_id,))
         conn.execute(
             """
             UPDATE houses
@@ -329,6 +373,9 @@ def reset_house(house_id: str) -> None:
                 baseline_furniture_value = NULL,
                 final_excel_bytes = NULL,
                 final_excel_source_hash = NULL,
+                contract_details = NULL,
+                workflow_contract_done = FALSE,
+                quotation_details = NULL,
                 updated_at = %s
             WHERE id = %s
             """,
@@ -389,13 +436,33 @@ def update_final_export(house_id: str, file_bytes: bytes, source_hash: str) -> N
         )
 
 
-_WORKFLOW_STEP_COLUMNS = {"calc": "workflow_calc_done", "quotation": "workflow_quotation_done"}
+_WORKFLOW_STEP_COLUMNS = {
+    "calc": "workflow_calc_done",
+    "quotation": "workflow_quotation_done",
+    "contract": "workflow_contract_done",
+}
 
 
 def set_workflow_step_done(house_id: str, step: str, done: bool) -> None:
     column = _WORKFLOW_STEP_COLUMNS[step]
     with get_conn() as conn:
         conn.execute(f"UPDATE houses SET {column} = %s, updated_at = %s WHERE id = %s", (done, _now(), house_id))
+
+
+def update_contract_details(house_id: str, details: dict[str, Any]) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE houses SET contract_details = %s, updated_at = %s WHERE id = %s",
+            (json.dumps(details), _now(), house_id),
+        )
+
+
+def update_quotation_details(house_id: str, details: dict[str, Any]) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE houses SET quotation_details = %s, updated_at = %s WHERE id = %s",
+            (json.dumps(details), _now(), house_id),
+        )
 
 
 # --------------------------------------------------------------- furniture --
@@ -541,6 +608,88 @@ def get_quotation_pdf_bytes(pdf_id: int) -> tuple[str, bytes] | None:
             "SELECT filename, pdf_bytes FROM quotation_pdfs WHERE id = %s", (pdf_id,)
         ).fetchone()
     return (row["filename"], bytes(row["pdf_bytes"])) if row else None
+
+
+# --------------------------------------------------------- contract (สัญญา) --
+
+def replace_contract_attachments(house_id: str, items: list[dict[str, Any]]) -> None:
+    """Replaces all attachment pages for this house — each item is
+    {title, image_bytes, content_type, attachment_type, floor, zone,
+    item_range, reference_note}, in the display order they should appear in
+    the final contract PDF."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM contract_attachments WHERE house_id = %s", (house_id,))
+        conn.cursor().executemany(
+            """
+            INSERT INTO contract_attachments
+                (house_id, position, title, image_bytes, content_type,
+                 attachment_type, floor, zone, item_range, reference_note)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            [
+                (
+                    house_id,
+                    i,
+                    str(item.get("title") or ""),
+                    item["image_bytes"],
+                    str(item.get("content_type") or "image/png"),
+                    str(item.get("attachment_type") or ""),
+                    str(item.get("floor") or ""),
+                    str(item.get("zone") or ""),
+                    str(item.get("item_range") or ""),
+                    str(item.get("reference_note") or ""),
+                )
+                for i, item in enumerate(items)
+            ],
+        )
+        conn.execute("UPDATE houses SET updated_at = %s WHERE id = %s", (_now(), house_id))
+
+
+def get_contract_attachments_meta(house_id: str) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, position, title, attachment_type, floor, zone, item_range, reference_note
+            FROM contract_attachments WHERE house_id = %s ORDER BY position
+            """,
+            (house_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_contract_attachment_bytes(attachment_id: int) -> tuple[bytes, str] | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT image_bytes, content_type FROM contract_attachments WHERE id = %s", (attachment_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    return (bytes(row["image_bytes"]), row["content_type"] or "image/png")
+
+
+def get_contract_attachments_full(house_id: str) -> list[dict[str, Any]]:
+    """Ordered attachment rows (title, image_bytes, and remark metadata) for
+    building the combined contract PDF."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT title, image_bytes, attachment_type, floor, zone, item_range, reference_note
+            FROM contract_attachments WHERE house_id = %s ORDER BY position
+            """,
+            (house_id,),
+        ).fetchall()
+    return [
+        {
+            "title": r["title"],
+            "image_bytes": bytes(r["image_bytes"]),
+            "attachment_type": r["attachment_type"],
+            "floor": r["floor"],
+            "zone": r["zone"],
+            "item_range": r["item_range"],
+            "reference_note": r["reference_note"],
+        }
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------- exports --

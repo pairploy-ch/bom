@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Eye, FileEdit, FileText, FolderOpen, NotebookPen, Upload } from "lucide-react";
+import { Building2, Eye, FileEdit, FileText, FolderOpen, NotebookPen, Save, Upload } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
@@ -101,6 +101,17 @@ export default function QuotationPage() {
   const preview = mode === "house" ? housePreview : excelPreview;
   const hasSource = mode === "house" ? !!house.data : !!excelFile;
 
+  // ---------------------------------------------------- saved checkpoint --
+  // A previously-saved "บันทึก" snapshot (house mode only — there's no
+  // house-bound persistence target in Excel-upload mode) — if one exists,
+  // it wins over the freshly-computed preview on first load so in-table
+  // edits survive a reload instead of being silently recomputed away.
+  const quotationDetailsQuery = useQuery({
+    queryKey: ["quotation-details", houseId],
+    queryFn: () => api.getQuotationDetails(houseId),
+    enabled: mode === "house",
+  });
+
   // ---------------------------------------------------- editable rows --
   // Local copy the user can tweak in place (item name/qty/prices/remark)
   // without needing to go back to the source house or Excel file —
@@ -112,9 +123,27 @@ export default function QuotationPage() {
   // late and lint-flagged.
   const [editableRows, setEditableRows] = useState<QuotationRow[] | null>(null);
   const [syncedFrom, setSyncedFrom] = useState<QuotationPreviewData | undefined>(undefined);
-  if (preview.data !== syncedFrom) {
+  const savedAppliedRef = useRef(false);
+  // Gate the sync until we know whether a saved checkpoint exists (house
+  // mode) — otherwise the fresh preview would win a race against the saved-
+  // details fetch and "syncedFrom" would already be set by the time the
+  // saved data arrives, permanently losing it.
+  const detailsSettled = mode !== "house" || quotationDetailsQuery.isFetched;
+  if (detailsSettled && preview.data !== syncedFrom) {
     setSyncedFrom(preview.data);
-    setEditableRows(preview.data ? preview.data.rows : null);
+    const saved = mode === "house" ? quotationDetailsQuery.data : undefined;
+    if (saved && saved.rows.length > 0 && !savedAppliedRef.current) {
+      savedAppliedRef.current = true;
+      setEditableRows(saved.rows);
+      setClientName(saved.client_name);
+      setProjectName(saved.project_name);
+      setQuotationDate(saved.quotation_date);
+      setDepositDeduction(saved.deposit_deduction);
+      setRemarks(saved.remarks);
+      setGrandTotalNote(saved.grand_total_note);
+    } else {
+      setEditableRows(preview.data ? preview.data.rows : null);
+    }
   }
 
   const updateRow = (index: number, patch: Partial<QuotationRow>) =>
@@ -168,6 +197,24 @@ export default function QuotationPage() {
       }),
     onSuccess: (blob) => triggerDownload(blob, "ใบเสนอราคา.docx"),
     onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to generate the Word file."),
+  });
+
+  const saveQuotationDetails = useMutation({
+    mutationFn: () =>
+      api.updateQuotationDetails(houseId, {
+        client_name: clientName,
+        project_name: projectName,
+        quotation_date: quotationDate,
+        deposit_deduction: depositDeduction,
+        remarks,
+        grand_total_note: grandTotalNote,
+        rows: editableRows ?? [],
+      }),
+    onSuccess: () => {
+      toast.success("บันทึกใบราคาแล้ว");
+      queryClient.invalidateQueries({ queryKey: ["quotation-details", houseId] });
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to save the quotation."),
   });
 
   return (
@@ -361,6 +408,14 @@ export default function QuotationPage() {
             description="แก้ไขค่าในตารางได้โดยตรงก่อน export"
             right={
               <div className="flex gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => saveQuotationDetails.mutate()}
+                  disabled={saveQuotationDetails.isPending}
+                >
+                  {saveQuotationDetails.isPending ? <Spinner /> : <Save size={16} />}
+                  บันทึก
+                </Button>
                 <Button variant="secondary" onClick={() => downloadDocx.mutate()} disabled={downloadDocx.isPending}>
                   {downloadDocx.isPending ? <Spinner /> : <FileEdit size={16} />}
                   Export Word

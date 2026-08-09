@@ -44,7 +44,7 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.exceptions import InvalidFileException
 from PIL import Image as PILImage
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
@@ -52,8 +52,10 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
+    Flowable,
     Image,
     KeepTogether,
+    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -930,7 +932,18 @@ def parse_exported_excel_for_quotation(
     m_idx = column_index_from_string("K")
     n_idx = column_index_from_string("L")
 
-    total_row = find_grand_total_row(ws, col_map.start_row)
+    # find_grand_total_row() detects the summary row by its literal
+    # "=SUM(...)" formula text — but `ws` above was loaded with
+    # data_only=True (so K/L resolve to computed numbers, needed to read
+    # each item's actual price), and a data_only=True sheet never exposes
+    # formula strings, only their cached values. So detection needs a
+    # second, formula-preserving load of the same bytes purely to locate
+    # the boundary; without this, the grand-total row (item column holds
+    # "ราคารวมสุทธิ: ... บาท", K/L hold the SUM'd totals) was being read
+    # back in as if it were an ordinary priced item.
+    formula_wb = load_workbook_from_bytes(file_bytes)
+    formula_ws = formula_wb[sheet_name] if sheet_name in formula_wb.sheetnames else None
+    total_row = find_grand_total_row(formula_ws, col_map.start_row) if formula_ws is not None else None
     last_row = (total_row - 1) if total_row is not None else ws.max_row
 
     def as_price(val: Any) -> float | None:
@@ -977,6 +990,43 @@ def parse_exported_excel_for_quotation(
             "โดยไม่เคยเปิดด้วย Microsoft Excel) กรุณาเปิดไฟล์ด้วย Excel แล้วบันทึกอีกครั้งก่อนอัปโหลด "
             "เพื่อให้ Excel คำนวณค่าสูตรและบันทึกผลลัพธ์ไว้ในไฟล์"
         )
+
+    # Cross-check against the file's own grand-total row (if one was
+    # detected): re-summing every parsed row's K/L value — with the exact
+    # same rules the app actually uses for the displayed Total (no quantity
+    # multiplier, "Option 1 only" — see _is_priced_option) — should match
+    # that row's own SUM(K...)/SUM(L...) cached value almost exactly, since
+    # real exported files already build their own total the same option-
+    # aware way. A mismatch means the parse likely missed a row (or grabbed
+    # an extra one), worth surfacing instead of silently trusting either
+    # number. (An earlier version of this check compared the raw,
+    # un-filtered sum instead — that produced a false-positive warning on
+    # every file with an "Option 2/3" alternate, since the file's own total
+    # already excludes those but the raw re-sum didn't.)
+    if total_row is not None:
+
+        def excel_column_total(idx: int) -> float | None:
+            val = ws.cell(row=total_row, column=idx).value
+            return float(val) if isinstance(val, (int, float)) else None
+
+        excel_k_total = excel_column_total(m_idx)
+        excel_l_total = excel_column_total(n_idx)
+        priced_rows = [r for r in rows if _is_priced_option(r["item_name"])]
+        parsed_k_total = sum(r["m_10dk_price"] or 0 for r in priced_rows)
+        parsed_l_total = sum(r["n_actual_price"] or 0 for r in priced_rows)
+
+        def check_total(col_letter: str, label: str, excel_total: float | None, parsed_total: float) -> None:
+            if excel_total is None:
+                return
+            if abs(excel_total - parsed_total) > 1:  # >1 บาท — ignore float rounding dust
+                warnings.append(
+                    f"⚠️ ยอดรวมคอลัมน์ {col_letter} ({label}) ไม่ตรงกับไฟล์ต้นฉบับ — ไฟล์ Excel เดิมแสดง "
+                    f"{excel_total:,.0f} บาท แต่ระบบคำนวณได้ {parsed_total:,.0f} บาท "
+                    f"(อาจมีบางแถวถูกข้ามหรือรวมผิดพลาด กรุณาตรวจสอบไฟล์ต้นฉบับ)"
+                )
+
+        check_total("K", "10DK Price", excel_k_total, parsed_k_total)
+        check_total("L", "เบิกจ่ายตามราคาจริง", excel_l_total, parsed_l_total)
 
     return rows, warnings
 
@@ -1046,42 +1096,46 @@ def _quotation_group_key(row: dict[str, Any]) -> tuple[str, str]:
     return (str(row.get("floor") or "").strip(), str(row.get("room") or "Unspecified"))
 
 
+_OPTION_RE = re.compile(r"option\s*(\d+)", re.IGNORECASE)
+
+
+def _is_priced_option(item_name: str) -> bool:
+    """An item name with no "Option N" label always counts. One that does
+    (e.g. "TV Console Option 1" / "Option 2" / "Option 3" — alternate design
+    choices for the same piece, client picks one) counts only as "Option 1"
+    — the others are shown for reference but excluded from the total, since
+    summing every option would charge for a single piece multiple times."""
+    m = _OPTION_RE.search(item_name)
+    return not m or m.group(1) == "1"
+
+
 def _quotation_row_totals(row: dict[str, Any]) -> tuple[float, float]:
-    """Returns (dk_work_line_total, purchase_line_total) — 0 for a "Client's" row (never priced)."""
-    if row.get("is_client_owned"):
+    """Returns (dk_work_line_total, purchase_line_total) — 0 for a "Client's"
+    row (never priced) or a non-"Option 1" alternate (see _is_priced_option).
+    The price columns (10DK's work / purchase) are taken as-is, NOT
+    multiplied by quantity — per explicit client instruction, quantity is
+    informational only and never factors into the Total."""
+    if row.get("is_client_owned") or not _is_priced_option(str(row.get("item_name") or "")):
         return 0.0, 0.0
-    qty = float(row.get("quantity") or 0)
-    dk = float(row.get("dk_work_price") or 0) * qty if row.get("dk_work_price") is not None else 0.0
-    purchase = (
-        float(row.get("actual_price_purchase") or 0) * qty if row.get("actual_price_purchase") is not None else 0.0
-    )
+    dk = float(row.get("dk_work_price") or 0) if row.get("dk_work_price") is not None else 0.0
+    purchase = float(row.get("actual_price_purchase") or 0) if row.get("actual_price_purchase") is not None else 0.0
     return dk, purchase
 
 
-def generate_quotation_pdf(
+def _build_quotation_table_story(
     rows: list[dict[str, Any]],
-    client_name: str,
-    project_name: str,
-    quotation_date: str,
-    logo_bytes: bytes | None = None,
     deposit_deduction: float = 0,
     remarks: str = "",
     grand_total_note: str = "",
-) -> bytes:
+) -> list[Any]:
     """
-    Renders the client-facing "ใบเสนอราคา" as a real PDF via reportlab's
-    platypus flowables, matching the reference template exactly: a
-    right-aligned letterhead, a centered bold title, two-level Floor > Room
-    header bands, a light (not dark) column-header row, "Client's" rows
-    shaded gray with blank price cells, a Total row split into the 10DK's-
-    work and purchase-at-cost columns, VAT 7% (on the 10DK's-work column
-    only), an optional red "หักค่ามัดจำออกแบบ" deduction row, a bold Grand
-    Total row with a small note, and a final "Remarks:" bullet section.
-    rows must already carry a `label` (see assign_quotation_labels) and be
-    given in the order they should render — caller is responsible for
-    floor/room-adjacency. logo_bytes, if given (the company's once-uploaded
-    logo — see db.get_company_logo), is placed above the company block in
-    the letterhead; otherwise that space is simply left blank.
+    Builds the priced-furniture table + totals + remarks flowables shared by
+    both the standalone quotation PDF (generate_quotation_pdf, which wraps
+    this with its own letterhead/title) and the combined contract PDF
+    (generate_contract_pdf, which appends this as the document's final
+    section — matching the reference contract template's own "เอกสารแนบ
+    (18)" price table). Self-contained (registers fonts, defines its own
+    styles) so either caller can use it without sharing any state.
     """
     _ensure_thai_fonts_registered()
 
@@ -1091,17 +1145,6 @@ def generate_quotation_pdf(
     body_style = ParagraphStyle("QuoteBody", fontName="TPTankhun", fontSize=13, leading=16)
     body_red_style = ParagraphStyle("QuoteBodyRed", parent=body_style, textColor=colors.HexColor("#dc2626"))
     header_style = ParagraphStyle("QuoteHeader", fontName="TPTankhun-Bold", fontSize=13, leading=16)
-    # Letterhead (company name / address / date) only — per client request,
-    # size 7.5pt. Font is "Avenir" per that same request, but Avenir is a
-    # commercial font not present on this system/repo — using TPTankhun as a
-    # placeholder here until the actual Avenir .ttf/.otf files are supplied.
-    title_style = ParagraphStyle("QuoteTitle", fontName="TPTankhun-Bold", fontSize=7.5, leading=10)
-    meta_style = ParagraphStyle("QuoteMeta", fontName="TPTankhun", fontSize=7.5, leading=10)
-    title_center_style = ParagraphStyle(
-        "QuoteTitleCenter", fontName="TPTankhun-Bold", fontSize=14, leading=17, alignment=TA_CENTER
-    )
-    title_right_style = ParagraphStyle("QuoteTitleRight", parent=title_style, alignment=TA_RIGHT)
-    meta_right_style = ParagraphStyle("QuoteMetaRight", parent=meta_style, alignment=TA_RIGHT)
     floor_style = ParagraphStyle(
         "QuoteFloor", fontName="TPTankhun-Bold", fontSize=10, leading=13, textColor=colors.white
     )
@@ -1124,33 +1167,6 @@ def generate_quotation_pdf(
     remarks_heading_style = ParagraphStyle("RemarksHeading", fontName="TPTankhun-Bold", fontSize=10, leading=13)
 
     story: list[Any] = []
-
-    # Letterhead: logo stacked above the company info block, both
-    # right-aligned as a single column (matches the reference template).
-    story.append(Spacer(1, 6 * mm))
-    if logo_bytes:
-        logo = _sized_image(logo_bytes, 10 * mm, 20 * mm)
-        logo.hAlign = "RIGHT"
-        story.append(logo)
-        story.append(Spacer(1, 2 * mm))
-    story.append(Paragraph("10DK Co., Ltd", title_right_style))
-    story.append(Paragraph("141 Major Tower Thonglo, Khlong Ton Nua, Bangkok 10110", meta_right_style))
-    if quotation_date:
-        story.append(Paragraph(esc(quotation_date), meta_right_style))
-    story.append(Spacer(1, 6 * mm))
-
-    project_name = project_name.strip()
-    client_name = client_name.strip()
-    if project_name and client_name:
-        title_line = f"รายการเฟอร์นิเจอร์และราคาสำหรับ{esc(project_name)}: {esc(client_name)}"
-    elif project_name:
-        title_line = f"รายการเฟอร์นิเจอร์และราคาสำหรับ{esc(project_name)}"
-    elif client_name:
-        title_line = f"รายการเฟอร์นิเจอร์และราคา: {esc(client_name)}"
-    else:
-        title_line = "รายการเฟอร์นิเจอร์และราคา"
-    story.append(Paragraph(title_line, title_center_style))
-    story.append(Spacer(1, 6 * mm))
 
     # A single continuous table for the whole document: the column-header
     # row sits once at the very top (repeated on later pages via
@@ -1296,6 +1312,346 @@ def generate_quotation_pdf(
             )
             story.append(Paragraph(f"- {bits}", body_style))
 
+    return story
+
+
+def generate_quotation_pdf(
+    rows: list[dict[str, Any]],
+    client_name: str,
+    project_name: str,
+    quotation_date: str,
+    logo_bytes: bytes | None = None,
+    deposit_deduction: float = 0,
+    remarks: str = "",
+    grand_total_note: str = "",
+) -> bytes:
+    """
+    Renders the client-facing "ใบเสนอราคา" as a real PDF via reportlab's
+    platypus flowables, matching the reference template exactly: a
+    right-aligned letterhead, a centered bold title, two-level Floor > Room
+    header bands, a light (not dark) column-header row, "Client's" rows
+    shaded gray with blank price cells, a Total row split into the 10DK's-
+    work and purchase-at-cost columns, VAT 7% (on the 10DK's-work column
+    only), an optional red "หักค่ามัดจำออกแบบ" deduction row, a bold Grand
+    Total row with a small note, and a final "Remarks:" bullet section.
+    rows must already carry a `label` (see assign_quotation_labels) and be
+    given in the order they should render — caller is responsible for
+    floor/room-adjacency. logo_bytes, if given (the company's once-uploaded
+    logo — see db.get_company_logo), is placed above the company block in
+    the letterhead; otherwise that space is simply left blank.
+    """
+    _ensure_thai_fonts_registered()
+
+    def esc(text: Any) -> str:
+        return xml_escape(str(text if text is not None else ""))
+
+    # Letterhead (company name / address / date) only — per client request,
+    # size 7.5pt. Font is "Avenir" per that same request, but Avenir is a
+    # commercial font not present on this system/repo — using TPTankhun as a
+    # placeholder here until the actual Avenir .ttf/.otf files are supplied.
+    title_style = ParagraphStyle("QuoteTitle", fontName="TPTankhun-Bold", fontSize=7.5, leading=10)
+    meta_style = ParagraphStyle("QuoteMeta", fontName="TPTankhun", fontSize=7.5, leading=10)
+    title_center_style = ParagraphStyle(
+        "QuoteTitleCenter", fontName="TPTankhun-Bold", fontSize=14, leading=17, alignment=TA_CENTER
+    )
+    title_right_style = ParagraphStyle("QuoteTitleRight", parent=title_style, alignment=TA_RIGHT)
+    meta_right_style = ParagraphStyle("QuoteMetaRight", parent=meta_style, alignment=TA_RIGHT)
+
+    story: list[Any] = []
+
+    # Letterhead: logo stacked above the company info block, both
+    # right-aligned as a single column (matches the reference template).
+    story.append(Spacer(1, 6 * mm))
+    if logo_bytes:
+        logo = _sized_image(logo_bytes, 10 * mm, 20 * mm)
+        logo.hAlign = "RIGHT"
+        story.append(logo)
+        story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph("10DK Co., Ltd", title_right_style))
+    story.append(Paragraph("141 Major Tower Thonglo, Khlong Ton Nua, Bangkok 10110", meta_right_style))
+    if quotation_date:
+        story.append(Paragraph(esc(quotation_date), meta_right_style))
+    story.append(Spacer(1, 6 * mm))
+
+    project_name = project_name.strip()
+    client_name = client_name.strip()
+    if project_name and client_name:
+        title_line = f"รายการเฟอร์นิเจอร์และราคาสำหรับ{esc(project_name)}: {esc(client_name)}"
+    elif project_name:
+        title_line = f"รายการเฟอร์นิเจอร์และราคาสำหรับ{esc(project_name)}"
+    elif client_name:
+        title_line = f"รายการเฟอร์นิเจอร์และราคา: {esc(client_name)}"
+    else:
+        title_line = "รายการเฟอร์นิเจอร์และราคา"
+    story.append(Paragraph(title_line, title_center_style))
+    story.append(Spacer(1, 6 * mm))
+
+    story.extend(_build_quotation_table_story(rows, deposit_deduction, remarks, grand_total_note))
+
+    output = io.BytesIO()
+    doc = SimpleDocTemplate(
+        output, pagesize=A4, topMargin=10 * mm, bottomMargin=10 * mm, leftMargin=10 * mm, rightMargin=10 * mm
+    )
+    doc.build(story)
+    return output.getvalue()
+
+
+def _build_contract_text_story(details: dict[str, Any]) -> list[Any]:
+    """
+    Renders ข้อ 1-8 of the 10DK interior-design contract template. Only the
+    template's actual blanks are read from `details` (a ContractDetails
+    dict) — the fixed clauses (ช่างฝีมือ, ไม่รวมงานแก้ไข, ความเสียหาย,
+    ดอกเบี้ย 15% ต่อปี, รับประกัน 1 ปี, การปิดท้ายสัญญา) are hardcoded here
+    exactly as worded in the reference template.
+    """
+    _ensure_thai_fonts_registered()
+
+    def esc(text: Any) -> str:
+        return xml_escape(str(text if text is not None else ""))
+
+    def g(key: str) -> str:
+        return esc(details.get(key) or "")
+
+    title_style = ParagraphStyle("ContractTitle", fontName="TPTankhun-Bold", fontSize=18, leading=22, alignment=TA_CENTER)
+    subtitle_style = ParagraphStyle("ContractSubtitle", fontName="TPTankhun", fontSize=15, leading=19, alignment=TA_CENTER)
+    date_style = ParagraphStyle("ContractDate", fontName="TPTankhun", fontSize=15, leading=19, alignment=TA_RIGHT)
+    body_style = ParagraphStyle(
+        "ContractBody", fontName="TPTankhun", fontSize=15, leading=21, alignment=TA_JUSTIFY, firstLineIndent=24
+    )
+    clause_label_style = ParagraphStyle("ContractClauseLabel", parent=body_style, fontName="TPTankhun-Bold")
+    sign_style = ParagraphStyle("ContractSign", fontName="TPTankhun", fontSize=15, leading=19, alignment=TA_CENTER)
+
+    money = lambda v: _fmt_money(v) if v is not None else "___________"  # noqa: E731
+
+    story: list[Any] = [
+        Paragraph("สัญญาจ้างตกแต่งภายใน", title_style),
+        Paragraph(f"สำหรับ{g('property_description')}", subtitle_style),
+        Spacer(1, 4 * mm),
+        Paragraph(f"วันที่ {g('contract_date')}", date_style),
+        Spacer(1, 4 * mm),
+        Paragraph(
+            f"สัญญาฉบับนี้ทำขึ้นที่{g('property_description')} ระหว่าง {g('client_name')} "
+            f"เลขที่บัตรประชาชน {g('client_id_number')} ที่อยู่ {g('client_address')} "
+            f"ซึ่งต่อไปในสัญญานี้ เรียกว่า &ldquo;ผู้ว่าจ้าง&rdquo; ฝ่ายหนึ่ง กับ {g('contractor_name')} "
+            f"โดย {g('contractor_signatory')} กรรมการผู้มีอำนาจ อยู่ที่ {g('contractor_address')} "
+            f"ซึ่งต่อไปนี้ในสัญญานี้เรียกว่า &ldquo;ผู้รับจ้าง&rdquo; อีกฝ่ายหนึ่ง "
+            f"คู่สัญญาทั้งสองฝ่ายตกลงทำสัญญากัน มีข้อความดังต่อไปนี้",
+            body_style,
+        ),
+        Spacer(1, 3 * mm),
+    ]
+
+    def clause(number: int, text: str) -> None:
+        story.append(Paragraph(f"<b>ข้อ {number}.</b> {text}", body_style))
+        story.append(Spacer(1, 2 * mm))
+
+    clause(
+        1,
+        f"ผู้ว่าจ้างตกลงจ้าง และผู้รับจ้างตกลงรับจ้างออกแบบตกแต่งภายในสำหรับ{g('property_description')} "
+        f"ซึ่งรวมถึงดำเนินการจัดหาเฟอร์นิเจอร์ หรือสั่งทำเฟอร์นิเจอร์ ตามแบบเฟอร์นิเจอร์ "
+        f"รายการที่ {g('included_item_range')} ในเอกสารแนบท้ายสัญญา หน้า {g('included_item_page')} "
+        f"ยกเว้นเฟอร์นิเจอร์ รายการที่ {g('excluded_item_range')} ในเอกสารแนบท้ายสัญญา หน้า {g('excluded_item_page')} "
+        f"ซึ่งผู้ว่าจ้างจะต้องชำระราคาเองตามราคาที่ซื้อจริง",
+    )
+    clause(
+        2,
+        f"ผู้ว่าจ้างตกลงชำระค่าจ้างให้แก่ผู้รับจ้าง รวมเป็นเงิน {money(details.get('total_price'))} บาท "
+        f"แบ่งชำระเป็น 3 งวด ดังนี้ งวดที่ 1 จำนวน {money(details.get('installment_1_amount'))} บาท "
+        f"ชำระวันทำสัญญา งวดที่ 2 จำนวน {money(details.get('installment_2_amount'))} บาท "
+        f"ชำระวันส่งมอบงาน โดยผู้รับจ้างจะแจ้งให้ผู้ว่าจ้างทราบล่วงหน้าเป็นลายลักษณ์อักษร ไม่น้อยกว่า 3 วัน "
+        f"งวดที่ 3 จำนวน {money(details.get('installment_3_amount'))} บาท ชำระวันส่งมอบงานครบถ้วน "
+        f"โดยผู้รับจ้างจะแจ้งให้ผู้ว่าจ้างทราบล่วงหน้าเป็นลายลักษณ์อักษร ไม่น้อยกว่า 3 วัน "
+        f"โดยชำระด้วยวิธีโอนเข้าบัญชี{g('bank_name')} {g('bank_branch')} บัญชีเงินฝากออมทรัพย์ "
+        f"ชื่อบัญชี {g('bank_account_name')} เลขที่บัญชี {g('bank_account_number')}",
+    )
+    clause(
+        3,
+        "ผู้รับจ้างสัญญาว่าจะจัดหาช่างฝีมือดี พร้อมควบคุมการทำงาน เพื่อทำเฟอร์นิเจอร์ตามแบบในเอกสารแนบท้ายสัญญา"
+        "พร้อมติดตั้งจนกว่างานจะแล้วเสร็จ",
+    )
+    clause(
+        4,
+        "งานตามสัญญานี้ไม่รวมงานแก้ไขความเสียหายความผิดพลาดจากการก่อสร้างของผู้ว่าจ้างหรือผู้รับเหมารายอื่นของผู้ว่าจ้าง",
+    )
+    clause(
+        5,
+        f"ผู้รับจ้างสัญญาว่าจะทำงานที่ว่าจ้างให้แล้วเสร็จ โดยแบ่งการส่งมอบงานออกเป็นสองช่วง ดังนี้ "
+        f"ช่วงที่ 1 ผู้รับจ้างสัญญาว่าจะทำงานในส่วนของ {g('phase_1_rooms')} ให้แล้วเสร็จภายในวันที่ {g('phase_1_date')} "
+        f"หลังจากวันลงนามในสัญญาและทำการชำระเงินงวดแรกเรียบร้อยแล้ว "
+        f"ช่วงที่ 2 ผู้รับจ้างสัญญาว่าจะทำงานในส่วนของ {g('phase_2_rooms')} ให้แล้วเสร็จภายในวันที่ {g('phase_2_date')} "
+        f"หลังจากวันลงนามในสัญญาและทำการชำระเงินงวดแรกเรียบร้อยแล้ว "
+        f"โดยผู้ว่าจ้างตกลงจะเตรียมพื้นที่หน้างานให้อยู่ในสภาพเรียบร้อยพร้อมที่ผู้รับจ้างจะสามารถทำงานได้"
+        f"โดยไม่มีผู้รับเหมารายอื่น เข้าทำงานพร้อมกันในพื้นที่หน้างาน เป็นเวลาอย่างน้อย {g('prep_area_days') or '30'} วัน "
+        f"ก่อนครบกำหนดเวลาดำเนินงานดังกล่าว แต่ถ้าผู้รับจ้างทำงานไม่แล้วเสร็จตามกำหนดเวลาดังกล่าวโดยไม่ใช่ความผิดของ"
+        f"ผู้รับจ้าง ผู้รับจ้างไม่ต้องรับผิดต่อผู้ว่าจ้าง",
+    )
+    clause(
+        6,
+        "ผู้รับจ้างจะรับผิดชอบต่อผู้ว่าจ้างในความเสียหายที่เกิดจากการทำงานของผู้รับจ้าง รวมทั้งการกระทำของคนงาน "
+        "ช่าง หรือบริวารของผู้รับจ้างในบริเวณที่ทำงานในสถานที่ของผู้ว่าจ้าง เว้นแต่กรณีเกิดจากเหตุสุดวิสัย",
+    )
+    clause(7, "หากมีหนี้เงินที่ผู้ว่าจ้างค้างชำระ ผู้ว่าจ้างตกลงเสียดอกเบี้ยให้แก่ผู้รับจ้างในอัตราร้อยละ 15 ต่อปี")
+    clause(
+        8,
+        "ผู้รับจ้างรับประกันผลงานเป็นระยะเวลา 1 ปีนับแต่วันส่งมอบงาน โดยผู้รับจ้างจะรับผิดชอบแก้ไขซ่อมแซมเฟอร์นิเจอร์"
+        "ที่ชำรุดเสียหายจากการผลิตหรือการติดตั้งของผู้รับจ้างด้วยค่าใช้จ่ายของผู้รับจ้างเอง "
+        "การรับประกันผลงานดังกล่าวไม่รวมรอยขีดข่วนหรือความเสียหายที่เกิดจากการใช้งานในชีวิตประจำวันหรือเกิดจาก"
+        "การเคลื่อนย้ายของผู้ว่าจ้างเองภายหลังจากการส่งมอบงาน และไม่รวมความเสียหายที่เกิดจากการใช้งานผิดวิธีหรือ"
+        "ผิดวัตถุประสงค์ของเฟอร์นิเจอร์",
+    )
+
+    story.append(Paragraph(
+        "สัญญานี้ทำขึ้นสองฉบับ มีข้อความตรงกัน เก็บไว้ฝ่ายละฉบับ ทั้งสองฝ่ายได้อ่านและเข้าใจข้อความในสัญญาแล้ว "
+        "ถูกต้องตามความประสงค์ทุกประการ จึงลงชื่อและประทับตรา (ถ้ามี) ไว้เป็นสำคัญต่อหน้าพยาน",
+        body_style,
+    ))
+    story.append(Spacer(1, 12 * mm))
+
+    def sign_cell(text: str) -> Paragraph:
+        return Paragraph(text, sign_style)
+
+    sign_rows = [
+        ["ลงชื่อ....................................................ผู้ว่าจ้าง", "ลงชื่อ....................................................ผู้รับจ้าง"],
+        [f"({g('client_name')})", f"({g('contractor_signatory')})"],
+        ["", g("contractor_title")],
+        ["", g("contractor_name")],
+        [Spacer(1, 10 * mm), Spacer(1, 10 * mm)],
+        ["ลงชื่อ....................................................พยาน", "ลงชื่อ....................................................พยาน"],
+        [f"({g('witness_1_name')})", f"({g('witness_2_name')})"],
+    ]
+    sign_table = Table(
+        [[sign_cell(cell) if isinstance(cell, str) else cell for cell in row] for row in sign_rows],
+        colWidths=[85 * mm, 85 * mm],
+    )
+    sign_table.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    story.append(sign_table)
+
+    return story
+
+
+class _CornerNote(Flowable):
+    """
+    Pins `lines` to the bottom-right corner of whatever page this flowable
+    ends up on — page-absolute coordinates, not flow-relative — matching the
+    reference contract template's own bottom-right "หมายเหตุ:" footnote on
+    plan/perspective/furniture-list attachment pages. wrap() reports zero
+    size so it doesn't push the image/title above it around; draw() writes
+    directly onto the current page's canvas (self.canv, set by the platypus
+    frame machinery right before draw() is called).
+    """
+
+    def __init__(self, lines: list[str], font_name: str = "TPTankhun", font_size: float = 8, margin: float = 10 * mm):
+        super().__init__()
+        self.lines = lines
+        self.font_name = font_name
+        self.font_size = font_size
+        self.margin = margin
+
+    def wrap(self, available_width: float, available_height: float) -> tuple[float, float]:
+        return (0, 0)
+
+    def draw(self) -> None:
+        canv = self.canv
+        page_w, _page_h = A4
+        canv.saveState()
+        canv.setFont(self.font_name, self.font_size)
+        y = self.margin
+        for line in reversed(self.lines):
+            canv.drawRightString(page_w - self.margin, y, line)
+            y += self.font_size + 2
+        canv.restoreState()
+
+
+# Fixed footnote text per attachment type, matching the reference contract
+# template's own wording exactly. "furniture_list" has two blanks
+# ({item_range}/{reference_note}) filled in from that attachment's own
+# saved fields — see ContractAttachmentUpload in schemas.py.
+_ATTACHMENT_PLAN_PERSPECTIVE_NOTE = "หมายเหตุ: แบบอาจมีการปรับเปลี่ยนรายละเอียดได้ตามความเหมาะสม"
+
+
+def _attachment_remark_lines(attachment: dict[str, Any]) -> list[str]:
+    kind = attachment.get("attachment_type") or ""
+    if kind in ("plan", "perspective"):
+        return [_ATTACHMENT_PLAN_PERSPECTIVE_NOTE]
+    if kind == "furniture_list":
+        item_range = attachment.get("item_range") or ""
+        reference_note = attachment.get("reference_note") or ""
+        return [
+            "หมายเหตุ:",
+            "1. แบบอาจมีการปรับเปลี่ยนรายละเอียดได้ตามความเหมาะสม",
+            f"2. รายการสั่งผลิตเฟอร์นิเจอร์ลำดับที่ {item_range} ที่รวมอยู่ในสัญญาฉบับนี้",
+            f" แสดงตามเอกสารแนบท้ายในสัญญา {reference_note}",
+        ]
+    return []
+
+
+def generate_contract_pdf(
+    details: dict[str, Any],
+    attachments: list[dict[str, Any]],
+    quotation_rows: list[dict[str, Any]],
+    deposit_deduction: float = 0,
+    remarks: str = "",
+    grand_total_note: str = "",
+) -> bytes:
+    """
+    The combined "ทำสัญญา" document: contract text (ข้อ 1-8) -> each saved
+    attachment page (floor plans / furniture renders / marked-up photos,
+    each a dict with image_bytes/title/floor/zone/attachment_type/
+    item_range/reference_note — see db.get_contract_attachments_full) ->
+    the priced furniture table (reusing _build_quotation_table_story) —
+    same page order as the reference template. One reportlab story built
+    into a single PDF, no separate PDF-merge step needed.
+    """
+    _ensure_thai_fonts_registered()
+
+    attachment_title_style = ParagraphStyle(
+        "AttachmentTitle", fontName="TPTankhun-Bold", fontSize=11, leading=14, alignment=TA_CENTER
+    )
+    attachment_subtitle_style = ParagraphStyle(
+        "AttachmentSubtitle", fontName="TPTankhun", fontSize=10, leading=13, alignment=TA_CENTER
+    )
+    price_title_style = ParagraphStyle(
+        "PriceTitle", fontName="TPTankhun-Bold", fontSize=14, leading=17, alignment=TA_CENTER
+    )
+
+    story: list[Any] = _build_contract_text_story(details)
+
+    for attachment in attachments:
+        story.append(PageBreak())
+        title = attachment.get("title") or ""
+        if title:
+            story.append(Paragraph(xml_escape(title), attachment_title_style))
+            story.append(Spacer(1, 2 * mm))
+        subtitle = " ".join(s for s in (attachment.get("floor"), attachment.get("zone")) if s)
+        if subtitle:
+            story.append(Paragraph(xml_escape(subtitle), attachment_subtitle_style))
+        if title or subtitle:
+            story.append(Spacer(1, 3 * mm))
+        img = _sized_image(attachment["image_bytes"], 180 * mm, 240 * mm)
+        img.hAlign = "CENTER"
+        story.append(img)
+        remark_lines = _attachment_remark_lines(attachment)
+        if remark_lines:
+            story.append(_CornerNote(remark_lines))
+
+    if quotation_rows:
+        story.append(PageBreak())
+        client_name = details.get("client_name") or ""
+        property_description = details.get("property_description") or ""
+        title_line = (
+            f"รายการเฟอร์นิเจอร์และราคาสำหรับ{xml_escape(property_description)}: {xml_escape(client_name)}"
+            if property_description
+            else "รายการเฟอร์นิเจอร์และราคา"
+        )
+        story.append(Paragraph(title_line, price_title_style))
+        story.append(Spacer(1, 6 * mm))
+        story.extend(_build_quotation_table_story(quotation_rows, deposit_deduction, remarks, grand_total_note))
+
     output = io.BytesIO()
     doc = SimpleDocTemplate(
         output, pagesize=A4, topMargin=10 * mm, bottomMargin=10 * mm, leftMargin=10 * mm, rightMargin=10 * mm
@@ -1440,6 +1796,24 @@ def generate_quotation_docx(
     title_run.font.name = _DOCX_FONT_BOLD
     title_run.font.size = Pt(14)
 
+    _add_quotation_table_to_docx(doc, rows, deposit_deduction, remarks, grand_total_note)
+
+    output = io.BytesIO()
+    doc.save(output)
+    return output.getvalue()
+
+
+def _add_quotation_table_to_docx(
+    doc: Document,
+    rows: list[dict[str, Any]],
+    deposit_deduction: float = 0,
+    remarks: str = "",
+    grand_total_note: str = "",
+) -> None:
+    """Appends the item table + totals + remarks section to `doc` — extracted
+    out of generate_quotation_docx so generate_contract_docx can attach the
+    exact same table as its final section, mirroring how
+    _build_quotation_table_story is shared on the PDF side."""
     groups_order: list[tuple[str, str]] = []
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in rows:
@@ -1588,6 +1962,7 @@ def generate_quotation_docx(
         heading_run.bold = True
         heading_run.underline = True
         heading_run.font.name = _DOCX_FONT_BOLD
+        heading_run.font.size = Pt(13)
         for line in remark_lines:
             line_para = doc.add_paragraph()
             dash_run = line_para.add_run("- ")
@@ -1602,6 +1977,228 @@ def generate_quotation_docx(
                     run.font.name = _DOCX_FONT_BOLD
                 else:
                     run.font.name = _DOCX_FONT
+
+
+def _build_contract_text_docx(doc: Document, details: dict[str, Any]) -> None:
+    """Word counterpart to _build_contract_text_story — same ข้อ 1-8 wording
+    and blanks, appended directly to `doc` instead of returned as platypus
+    flowables. Fixed clauses are hardcoded here exactly as in the PDF path."""
+
+    def g(key: str) -> str:
+        return str(details.get(key) or "")
+
+    money = lambda v: _fmt_money(v) if v is not None else "___________"  # noqa: E731
+
+    def styled_para(text: str, *, bold: bool = False, size: float = 15, align=WD_ALIGN_PARAGRAPH.CENTER):
+        p = doc.add_paragraph()
+        p.alignment = align
+        run = p.add_run(text)
+        run.font.name = _DOCX_FONT_BOLD if bold else _DOCX_FONT
+        run.bold = bold
+        run.font.size = Pt(size)
+        return p
+
+    def body_para(text: str, *, bold_prefix: str = "") -> None:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.first_line_indent = Pt(24)
+        if bold_prefix:
+            prefix_run = p.add_run(bold_prefix)
+            prefix_run.font.name = _DOCX_FONT_BOLD
+            prefix_run.bold = True
+            prefix_run.font.size = Pt(15)
+        run = p.add_run(text)
+        run.font.name = _DOCX_FONT
+        run.font.size = Pt(15)
+
+    styled_para("สัญญาจ้างตกแต่งภายใน", bold=True, size=18)
+    styled_para(f"สำหรับ{g('property_description')}", size=15)
+    styled_para(f"วันที่ {g('contract_date')}", size=15, align=WD_ALIGN_PARAGRAPH.RIGHT)
+    body_para(
+        f"สัญญาฉบับนี้ทำขึ้นที่{g('property_description')} ระหว่าง {g('client_name')} "
+        f"เลขที่บัตรประชาชน {g('client_id_number')} ที่อยู่ {g('client_address')} "
+        f'ซึ่งต่อไปในสัญญานี้ เรียกว่า "ผู้ว่าจ้าง" ฝ่ายหนึ่ง กับ {g("contractor_name")} '
+        f"โดย {g('contractor_signatory')} กรรมการผู้มีอำนาจ อยู่ที่ {g('contractor_address')} "
+        f'ซึ่งต่อไปนี้ในสัญญานี้เรียกว่า "ผู้รับจ้าง" อีกฝ่ายหนึ่ง '
+        f"คู่สัญญาทั้งสองฝ่ายตกลงทำสัญญากัน มีข้อความดังต่อไปนี้"
+    )
+
+    def clause(number: int, text: str) -> None:
+        body_para(text, bold_prefix=f"ข้อ {number}. ")
+
+    clause(
+        1,
+        f"ผู้ว่าจ้างตกลงจ้าง และผู้รับจ้างตกลงรับจ้างออกแบบตกแต่งภายในสำหรับ{g('property_description')} "
+        f"ซึ่งรวมถึงดำเนินการจัดหาเฟอร์นิเจอร์ หรือสั่งทำเฟอร์นิเจอร์ ตามแบบเฟอร์นิเจอร์ "
+        f"รายการที่ {g('included_item_range')} ในเอกสารแนบท้ายสัญญา หน้า {g('included_item_page')} "
+        f"ยกเว้นเฟอร์นิเจอร์ รายการที่ {g('excluded_item_range')} ในเอกสารแนบท้ายสัญญา หน้า {g('excluded_item_page')} "
+        f"ซึ่งผู้ว่าจ้างจะต้องชำระราคาเองตามราคาที่ซื้อจริง",
+    )
+    clause(
+        2,
+        f"ผู้ว่าจ้างตกลงชำระค่าจ้างให้แก่ผู้รับจ้าง รวมเป็นเงิน {money(details.get('total_price'))} บาท "
+        f"แบ่งชำระเป็น 3 งวด ดังนี้ งวดที่ 1 จำนวน {money(details.get('installment_1_amount'))} บาท "
+        f"ชำระวันทำสัญญา งวดที่ 2 จำนวน {money(details.get('installment_2_amount'))} บาท "
+        f"ชำระวันส่งมอบงาน โดยผู้รับจ้างจะแจ้งให้ผู้ว่าจ้างทราบล่วงหน้าเป็นลายลักษณ์อักษร ไม่น้อยกว่า 3 วัน "
+        f"งวดที่ 3 จำนวน {money(details.get('installment_3_amount'))} บาท ชำระวันส่งมอบงานครบถ้วน "
+        f"โดยผู้รับจ้างจะแจ้งให้ผู้ว่าจ้างทราบล่วงหน้าเป็นลายลักษณ์อักษร ไม่น้อยกว่า 3 วัน "
+        f"โดยชำระด้วยวิธีโอนเข้าบัญชี{g('bank_name')} {g('bank_branch')} บัญชีเงินฝากออมทรัพย์ "
+        f"ชื่อบัญชี {g('bank_account_name')} เลขที่บัญชี {g('bank_account_number')}",
+    )
+    clause(
+        3,
+        "ผู้รับจ้างสัญญาว่าจะจัดหาช่างฝีมือดี พร้อมควบคุมการทำงาน เพื่อทำเฟอร์นิเจอร์ตามแบบในเอกสารแนบท้ายสัญญา"
+        "พร้อมติดตั้งจนกว่างานจะแล้วเสร็จ",
+    )
+    clause(
+        4,
+        "งานตามสัญญานี้ไม่รวมงานแก้ไขความเสียหายความผิดพลาดจากการก่อสร้างของผู้ว่าจ้างหรือผู้รับเหมารายอื่นของผู้ว่าจ้าง",
+    )
+    clause(
+        5,
+        f"ผู้รับจ้างสัญญาว่าจะทำงานที่ว่าจ้างให้แล้วเสร็จ โดยแบ่งการส่งมอบงานออกเป็นสองช่วง ดังนี้ "
+        f"ช่วงที่ 1 ผู้รับจ้างสัญญาว่าจะทำงานในส่วนของ {g('phase_1_rooms')} ให้แล้วเสร็จภายในวันที่ {g('phase_1_date')} "
+        f"หลังจากวันลงนามในสัญญาและทำการชำระเงินงวดแรกเรียบร้อยแล้ว "
+        f"ช่วงที่ 2 ผู้รับจ้างสัญญาว่าจะทำงานในส่วนของ {g('phase_2_rooms')} ให้แล้วเสร็จภายในวันที่ {g('phase_2_date')} "
+        f"หลังจากวันลงนามในสัญญาและทำการชำระเงินงวดแรกเรียบร้อยแล้ว "
+        f"โดยผู้ว่าจ้างตกลงจะเตรียมพื้นที่หน้างานให้อยู่ในสภาพเรียบร้อยพร้อมที่ผู้รับจ้างจะสามารถทำงานได้"
+        f"โดยไม่มีผู้รับเหมารายอื่น เข้าทำงานพร้อมกันในพื้นที่หน้างาน เป็นเวลาอย่างน้อย {g('prep_area_days') or '30'} วัน "
+        f"ก่อนครบกำหนดเวลาดำเนินงานดังกล่าว แต่ถ้าผู้รับจ้างทำงานไม่แล้วเสร็จตามกำหนดเวลาดังกล่าวโดยไม่ใช่ความผิดของ"
+        f"ผู้รับจ้าง ผู้รับจ้างไม่ต้องรับผิดต่อผู้ว่าจ้าง",
+    )
+    clause(
+        6,
+        "ผู้รับจ้างจะรับผิดชอบต่อผู้ว่าจ้างในความเสียหายที่เกิดจากการทำงานของผู้รับจ้าง รวมทั้งการกระทำของคนงาน "
+        "ช่าง หรือบริวารของผู้รับจ้างในบริเวณที่ทำงานในสถานที่ของผู้ว่าจ้าง เว้นแต่กรณีเกิดจากเหตุสุดวิสัย",
+    )
+    clause(7, "หากมีหนี้เงินที่ผู้ว่าจ้างค้างชำระ ผู้ว่าจ้างตกลงเสียดอกเบี้ยให้แก่ผู้รับจ้างในอัตราร้อยละ 15 ต่อปี")
+    clause(
+        8,
+        "ผู้รับจ้างรับประกันผลงานเป็นระยะเวลา 1 ปีนับแต่วันส่งมอบงาน โดยผู้รับจ้างจะรับผิดชอบแก้ไขซ่อมแซมเฟอร์นิเจอร์"
+        "ที่ชำรุดเสียหายจากการผลิตหรือการติดตั้งของผู้รับจ้างด้วยค่าใช้จ่ายของผู้รับจ้างเอง "
+        "การรับประกันผลงานดังกล่าวไม่รวมรอยขีดข่วนหรือความเสียหายที่เกิดจากการใช้งานในชีวิตประจำวันหรือเกิดจาก"
+        "การเคลื่อนย้ายของผู้ว่าจ้างเองภายหลังจากการส่งมอบงาน และไม่รวมความเสียหายที่เกิดจากการใช้งานผิดวิธีหรือ"
+        "ผิดวัตถุประสงค์ของเฟอร์นิเจอร์",
+    )
+
+    body_para(
+        "สัญญานี้ทำขึ้นสองฉบับ มีข้อความตรงกัน เก็บไว้ฝ่ายละฉบับ ทั้งสองฝ่ายได้อ่านและเข้าใจข้อความในสัญญาแล้ว "
+        "ถูกต้องตามความประสงค์ทุกประการ จึงลงชื่อและประทับตรา (ถ้ามี) ไว้เป็นสำคัญต่อหน้าพยาน"
+    )
+    doc.add_paragraph()
+
+    sign_rows = [
+        ["ลงชื่อ....................................................ผู้ว่าจ้าง", "ลงชื่อ....................................................ผู้รับจ้าง"],
+        [f"({g('client_name')})", f"({g('contractor_signatory')})"],
+        ["", g("contractor_title")],
+        ["", g("contractor_name")],
+        ["", ""],
+        ["ลงชื่อ....................................................พยาน", "ลงชื่อ....................................................พยาน"],
+        [f"({g('witness_1_name')})", f"({g('witness_2_name')})"],
+    ]
+    sign_table = doc.add_table(rows=len(sign_rows), cols=2)
+    sign_table.autofit = False
+    for r, row in enumerate(sign_rows):
+        cells = sign_table.rows[r].cells
+        for c, text in enumerate(row):
+            cells[c].width = Mm(85)
+            _set_cell_text(cells[c], text, align=WD_ALIGN_PARAGRAPH.CENTER, size=15)
+        if r == 4:
+            # Blank spacer row (matches the PDF's Spacer(1, 10*mm) between
+            # the signatory block and the witness block) — extra space
+            # after this row's (empty) paragraphs instead of a real gap,
+            # since docx tables can't hold non-paragraph flowables.
+            for cell in cells:
+                cell.paragraphs[0].paragraph_format.space_after = Pt(20)
+
+
+def _docx_image_size_mm(image_bytes: bytes, max_w_mm: float, max_h_mm: float) -> tuple[float, float]:
+    """Scales an image to fit within (max_w_mm, max_h_mm) while preserving
+    aspect ratio — docx counterpart to _sized_image (which works in points
+    for reportlab); using mm bounds directly here gives the same physical
+    output size as the PDF path for a fixed-resolution source like the
+    attachment canvas's 1000x700 export."""
+    iw, ih = PILImage.open(io.BytesIO(image_bytes)).size
+    scale = min(max_w_mm / iw, max_h_mm / ih)
+    return iw * scale, ih * scale
+
+
+def generate_contract_docx(
+    details: dict[str, Any],
+    attachments: list[dict[str, Any]],
+    quotation_rows: list[dict[str, Any]],
+    deposit_deduction: float = 0,
+    remarks: str = "",
+    grand_total_note: str = "",
+) -> bytes:
+    """
+    Word counterpart to generate_contract_pdf — same three sections
+    (contract text -> attachment pages -> priced furniture table) combined
+    into one .docx. Word has no page-absolute positioning (unlike the PDF
+    path's _CornerNote), so each attachment's remark note is placed as a
+    small paragraph directly under its image instead of pinned to the
+    page's bottom-right corner — close enough for a Word working copy that
+    people mainly use to tweak wording before re-exporting to PDF.
+    """
+    doc = Document()
+    doc.styles["Normal"].font.name = _DOCX_FONT
+    doc.styles["Normal"].font.size = Pt(15)
+    section = doc.sections[0]
+    section.top_margin = Mm(10)
+    section.bottom_margin = Mm(10)
+    section.left_margin = Mm(10)
+    section.right_margin = Mm(10)
+
+    _build_contract_text_docx(doc, details)
+
+    for attachment in attachments:
+        doc.add_page_break()
+        title = attachment.get("title") or ""
+        if title:
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(title)
+            run.font.name = _DOCX_FONT_BOLD
+            run.bold = True
+            run.font.size = Pt(13)
+        subtitle = " ".join(s for s in (attachment.get("floor"), attachment.get("zone")) if s)
+        if subtitle:
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(subtitle)
+            run.font.name = _DOCX_FONT
+            run.font.size = Pt(11)
+
+        img_para = doc.add_paragraph()
+        img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        w_mm, h_mm = _docx_image_size_mm(attachment["image_bytes"], 180.0, 240.0)
+        img_para.add_run().add_picture(io.BytesIO(attachment["image_bytes"]), width=Mm(w_mm), height=Mm(h_mm))
+
+        remark_lines = _attachment_remark_lines(attachment)
+        for line in remark_lines:
+            note_para = doc.add_paragraph()
+            note_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            note_run = note_para.add_run(line)
+            note_run.font.name = _DOCX_FONT
+            note_run.font.size = Pt(8)
+
+    if quotation_rows:
+        doc.add_page_break()
+        client_name = (details.get("client_name") or "").strip()
+        property_description = (details.get("property_description") or "").strip()
+        title_line = (
+            f"รายการเฟอร์นิเจอร์และราคาสำหรับ{property_description}: {client_name}"
+            if property_description
+            else "รายการเฟอร์นิเจอร์และราคา"
+        )
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run(title_line)
+        run.font.name = _DOCX_FONT_BOLD
+        run.bold = True
+        run.font.size = Pt(14)
+        doc.add_paragraph()
+        _add_quotation_table_to_docx(doc, quotation_rows, deposit_deduction, remarks, grand_total_note)
 
     output = io.BytesIO()
     doc.save(output)

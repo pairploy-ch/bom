@@ -26,12 +26,15 @@ from .logic import (
     ColumnMapping,
     LogicError,
     _current_export_source_hash,
+    _is_priced_option,
     assign_quotation_labels,
     build_quotation_rows,
     compute_price_preview,
     extract_furniture_list,
     extract_text_from_pdf,
     flag_suspicious_prices,
+    generate_contract_docx,
+    generate_contract_pdf,
     generate_quotation_docx,
     generate_quotation_pdf,
     get_anthropic_client,
@@ -47,6 +50,10 @@ from .logic import (
 from .schemas import (
     BaselineUpdate,
     ColumnMappingIn,
+    ContractAttachmentMeta,
+    ContractAttachmentUpload,
+    ContractDetails,
+    ContractPdfRequest,
     ExportRequest,
     ExportStatus,
     ExportVersionMeta,
@@ -67,6 +74,7 @@ from .schemas import (
     ProjectSummary,
     QuotationBucketMeta,
     QuotationBuildRequest,
+    QuotationDetails,
     QuotationPdfRequest,
     QuotationPreview,
     QuotationTextsResponse,
@@ -152,6 +160,12 @@ def _house_state(house_id: str) -> HouseState:
         has_final_export=row["final_excel_bytes"] is not None,
         workflow_calc_done=bool(row["workflow_calc_done"]),
         workflow_quotation_done=bool(row["workflow_quotation_done"]),
+        workflow_contract_done=bool(row["workflow_contract_done"]),
+        contract_details=ContractDetails(**json.loads(row["contract_details"])) if row["contract_details"] else None,
+        contract_attachment_count=len(db.get_contract_attachments_meta(house_id)),
+        quotation_details=(
+            QuotationDetails(**json.loads(row["quotation_details"])) if row["quotation_details"] else None
+        ),
         updated_at=row["updated_at"],
     )
 
@@ -283,6 +297,120 @@ def update_workflow_status(house_id: str, body: WorkflowStatusUpdate):
     _get_house_or_404(house_id)
     db.set_workflow_step_done(house_id, body.step, body.done)
     return {"step": body.step, "done": body.done}
+
+
+# --------------------------------------------------------- contract (สัญญา) --
+# "ทำสัญญา" — the 3rd house workflow step: a fillable contract form, a set
+# of ordered attachment images (pasted + annotated client-side), and a
+# combined PDF that appends the ใบราคา step's own priced table as its final
+# section. See logic.generate_contract_pdf / _build_contract_text_story.
+
+@app.get("/api/houses/{house_id}/contract", response_model=ContractDetails)
+def get_contract_details(house_id: str):
+    row = _get_house_or_404(house_id)
+    return ContractDetails(**json.loads(row["contract_details"])) if row["contract_details"] else ContractDetails()
+
+
+@app.patch("/api/houses/{house_id}/contract", response_model=ContractDetails)
+def update_contract_details(house_id: str, body: ContractDetails):
+    _get_house_or_404(house_id)
+    db.update_contract_details(house_id, body.model_dump())
+    return body
+
+
+@app.get("/api/houses/{house_id}/contract/attachments", response_model=list[ContractAttachmentMeta])
+def get_contract_attachments(house_id: str):
+    _get_house_or_404(house_id)
+    return db.get_contract_attachments_meta(house_id)
+
+
+@app.put("/api/houses/{house_id}/contract/attachments", response_model=list[ContractAttachmentMeta])
+async def upload_contract_attachments(
+    house_id: str, files: list[UploadFile] = File(default=[]), pages: str = Form(default="[]")
+):
+    """Replaces the full ordered set of attachment pages in one call — the
+    frontend flattens each canvas page to a PNG and re-sends the whole list
+    every save, matching replace_contract_attachments' delete-then-bulk-
+    insert semantics (simplest correct way to handle reordering/deletes).
+    `pages` is a JSON-encoded array of ContractAttachmentUpload objects
+    (title + remark metadata), one per file, zipped by index."""
+    _get_house_or_404(house_id)
+    try:
+        raw_pages = json.loads(pages)
+        page_list = [ContractAttachmentUpload(**p) for p in raw_pages]
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise HTTPException(422, f"pages must be a JSON array of attachment metadata objects: {exc}")
+    if len(page_list) != len(files):
+        raise HTTPException(422, "pages must have one entry per uploaded file.")
+    items = []
+    for file, page in zip(files, page_list):
+        content_type = file.content_type or "image/png"
+        if not content_type.startswith("image/"):
+            raise HTTPException(422, "Attachments must be image files.")
+        items.append({
+            "title": page.title,
+            "image_bytes": await file.read(),
+            "content_type": content_type,
+            "attachment_type": page.attachment_type,
+            "floor": page.floor,
+            "zone": page.zone,
+            "item_range": page.item_range,
+            "reference_note": page.reference_note,
+        })
+    db.replace_contract_attachments(house_id, items)
+    return db.get_contract_attachments_meta(house_id)
+
+
+@app.get("/api/houses/{house_id}/contract/attachments/{attachment_id}")
+def get_contract_attachment_file(house_id: str, attachment_id: int):
+    _get_house_or_404(house_id)
+    found = db.get_contract_attachment_bytes(attachment_id)
+    if found is None:
+        raise HTTPException(404, "Attachment not found")
+    image_bytes, content_type = found
+    return Response(content=image_bytes, media_type=content_type)
+
+
+@app.post("/api/houses/{house_id}/contract/pdf")
+def download_contract_pdf(house_id: str, body: ContractPdfRequest):
+    row = _get_house_or_404(house_id)
+    details = json.loads(row["contract_details"]) if row["contract_details"] else {}
+    attachments = db.get_contract_attachments_full(house_id)
+    rows = _rows_with_fresh_labels(body.rows)
+    pdf_bytes = generate_contract_pdf(
+        details,
+        attachments,
+        rows,
+        deposit_deduction=body.deposit_deduction,
+        remarks=body.remarks,
+        grand_total_note=body.grand_total_note,
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": _content_disposition("attachment", "สัญญาจ้างตกแต่งภายใน.pdf")},
+    )
+
+
+@app.post("/api/houses/{house_id}/contract/docx")
+def download_contract_docx(house_id: str, body: ContractPdfRequest):
+    row = _get_house_or_404(house_id)
+    details = json.loads(row["contract_details"]) if row["contract_details"] else {}
+    attachments = db.get_contract_attachments_full(house_id)
+    rows = _rows_with_fresh_labels(body.rows)
+    docx_bytes = generate_contract_docx(
+        details,
+        attachments,
+        rows,
+        deposit_deduction=body.deposit_deduction,
+        remarks=body.remarks,
+        grand_total_note=body.grand_total_note,
+    )
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": _content_disposition("attachment", "สัญญาจ้างตกแต่งภายใน.docx")},
+    )
 
 
 # ------------------------------------------------------------------ step 1 --
@@ -660,14 +788,20 @@ def download_export_version(house_id: str, version_id: int):
 # the same transient QuotationRow list, only ever sent back to the client.
 
 def _quotation_totals(rows: list[dict[str, Any]]) -> tuple[float, float, float, float]:
+    # Alternate "Option 2"/"Option 3" rows are excluded, same rule as
+    # logic._quotation_row_totals (used by the PDF/Word export path) — kept
+    # in sync so this endpoint's totals never disagree with the exported
+    # document's totals for the same rows. Prices are summed as-is, NOT
+    # multiplied by quantity — quantity is informational only.
+    priced_rows = [r for r in rows if _is_priced_option(str(r.get("item_name") or ""))]
     dk_work_subtotal = sum(
-        (r.get("dk_work_price") or 0) * (r.get("quantity") or 0)
-        for r in rows
+        r.get("dk_work_price") or 0
+        for r in priced_rows
         if not r.get("is_client_owned") and r.get("dk_work_price") is not None
     )
     purchase_subtotal = sum(
-        (r.get("actual_price_purchase") or 0) * (r.get("quantity") or 0)
-        for r in rows
+        r.get("actual_price_purchase") or 0
+        for r in priced_rows
         if not r.get("is_client_owned") and r.get("actual_price_purchase") is not None
     )
     vat = dk_work_subtotal * 0.07
@@ -691,6 +825,19 @@ def preview_quotation_from_house(house_id: str, body: QuotationBuildRequest):
         vat=vat,
         grand_total=grand_total,
     )
+
+
+@app.get("/api/houses/{house_id}/quotation-details", response_model=QuotationDetails)
+def get_quotation_details(house_id: str):
+    row = _get_house_or_404(house_id)
+    return QuotationDetails(**json.loads(row["quotation_details"])) if row["quotation_details"] else QuotationDetails()
+
+
+@app.patch("/api/houses/{house_id}/quotation-details", response_model=QuotationDetails)
+def update_quotation_details(house_id: str, body: QuotationDetails):
+    _get_house_or_404(house_id)
+    db.update_quotation_details(house_id, body.model_dump())
+    return body
 
 
 @app.post("/api/quotation-doc/inspect-excel")

@@ -112,10 +112,14 @@ export interface HouseState {
   // "generated" state, it's recomputed fresh from mapping_rows every visit).
   workflow_calc_done: boolean;
   workflow_quotation_done: boolean;
+  workflow_contract_done: boolean;
+  contract_details: ContractDetails | null;
+  contract_attachment_count: number;
+  quotation_details: QuotationDetails | null;
   updated_at: string;
 }
 
-export type WorkflowStep = "calc" | "quotation";
+export type WorkflowStep = "calc" | "quotation" | "contract";
 
 export interface AltBatchInfo {
   sum_of_item_costs?: number;
@@ -236,6 +240,86 @@ export interface QuotationPreview {
   purchase_subtotal: number;
   vat: number;
   grand_total: number;
+}
+
+// Saved "บันทึก" checkpoint for the quotation page's Preview table (house
+// mode only) — mirrors backend/app/schemas.py's QuotationDetails exactly.
+export interface QuotationDetails {
+  client_name: string;
+  project_name: string;
+  quotation_date: string;
+  deposit_deduction: number;
+  remarks: string;
+  grand_total_note: string;
+  rows: QuotationRow[];
+}
+
+// ------------------------------------------------------------- contract (สัญญา) --
+// Mirrors backend/app/schemas.py's ContractDetails exactly — only the
+// template's actual fill-in-the-blank fields; fixed clauses (ข้อ 3-8) are
+// hardcoded server-side in logic.py's PDF generator, not form fields here.
+
+export interface ContractDetails {
+  property_description: string;
+  contract_date: string;
+
+  client_name: string;
+  client_id_number: string;
+  client_address: string;
+
+  contractor_name: string;
+  contractor_signatory: string;
+  contractor_title: string;
+  contractor_address: string;
+
+  included_item_range: string;
+  included_item_page: string;
+  excluded_item_range: string;
+  excluded_item_page: string;
+
+  total_price: number | null;
+  installment_1_amount: number | null;
+  installment_2_amount: number | null;
+  installment_3_amount: number | null;
+  bank_name: string;
+  bank_branch: string;
+  bank_account_name: string;
+  bank_account_number: string;
+
+  phase_1_rooms: string;
+  phase_1_date: string;
+  phase_2_rooms: string;
+  phase_2_date: string;
+  prep_area_days: number;
+
+  witness_1_name: string;
+  witness_2_name: string;
+}
+
+export type AttachmentType = "" | "plan" | "perspective" | "furniture_list";
+
+export interface ContractAttachmentMeta {
+  id: number;
+  position: number;
+  title: string;
+  // Drives the auto "หมายเหตุ" footnote printed bottom-right on this page
+  // in the combined PDF — item_range/reference_note only matter when
+  // attachment_type is "furniture_list" (the "ลำดับที่ 1-27" / "(10)"
+  // blanks in that type's footnote text).
+  attachment_type: AttachmentType;
+  floor: string;
+  zone: string;
+  item_range: string;
+  reference_note: string;
+}
+
+export interface ContractAttachmentUpload {
+  title: string;
+  attachment_type: AttachmentType;
+  floor: string;
+  zone: string;
+  item_range: string;
+  reference_note: string;
 }
 
 export const BUCKET_LABELS = ["ALT", "P'May", "OTHER_MAKER", "PURCHASE"] as const;

@@ -5,7 +5,23 @@ import { cn, Input } from "@/components/ui/primitives";
 const fmt = (v: number | null | undefined) =>
   v === null || v === undefined ? "" : v.toLocaleString("en-US", { maximumFractionDigits: 0 });
 
+const OPTION_RE = /option\s*(\d+)/i;
+
+// An item name with no "Option N" label always counts. One that does (e.g.
+// "TV Console Option 1" / "Option 2" / "Option 3" — alternate design choices
+// for the same piece, client picks one) counts only as "Option 1" — mirrors
+// backend/app/logic.py's _is_priced_option exactly, so the live preview
+// total never disagrees with the exported PDF/Word total for the same rows.
+export function isPricedOption(itemName: string): boolean {
+  const m = OPTION_RE.exec(itemName);
+  return !m || m[1] === "1";
+}
+
 const HEADERS = ["#", "Furniture List", "จำนวน", "10DK's work", "ประมาณการงานจัดซื้อ เบิกจ่ายตามราคาจริง", "หมายเหตุ"];
+// "Furniture List" ~4x wider than its old auto-sized width, "จำนวน" as
+// narrow as it can reasonably go — the rest split the remainder. Requires
+// table-layout: fixed to actually take effect (see the <table> className).
+const COL_WIDTHS = ["4%", "44%", "5%", "13%", "19%", "15%"];
 
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
@@ -123,7 +139,12 @@ export function QuotationPreviewTable({
   return (
     <div className="space-y-4">
       <div className="overflow-x-auto rounded-lg border border-slate-300">
-        <table className="w-full min-w-[900px] border-collapse text-sm">
+        <table className="w-full min-w-[900px] table-fixed border-collapse text-sm">
+          <colgroup>
+            {COL_WIDTHS.map((w, i) => (
+              <col key={i} style={{ width: w }} />
+            ))}
+          </colgroup>
           <thead>
             <tr className="bg-slate-100 text-slate-800">
               {HEADERS.map((h) => (
@@ -162,12 +183,17 @@ export function QuotationPreviewTable({
                       const r = rows[i];
                       const unpriced =
                         !r.is_client_owned && r.dk_work_price == null && r.actual_price_purchase == null;
+                      // "Option 2" / "Option 3" etc. — an alternate for the
+                      // same item as some "Option 1" row, priced for
+                      // reference but excluded from the totals below (see
+                      // isPricedOption / _is_priced_option).
+                      const excludedOption = !r.is_client_owned && !isPricedOption(r.item_name);
                       return (
                         <tr
                           key={i}
                           className={cn(
                             "border-b border-slate-100",
-                            r.is_client_owned ? "bg-slate-200" : unpriced && "bg-red-50"
+                            r.is_client_owned ? "bg-slate-200" : unpriced ? "bg-red-50" : excludedOption && "bg-amber-50"
                           )}
                         >
                           <td className="border border-slate-300 px-2 py-1.5 text-center align-top">
@@ -188,6 +214,11 @@ export function QuotationPreviewTable({
                               onChange={(e) => onRowChange(i, { item_name: e.target.value })}
                               className="text-left"
                             />
+                            {excludedOption && (
+                              <p className="mt-0.5 text-[10px] font-medium text-amber-600">
+                                ตัวเลือกเสริม — ไม่รวมในยอดรวม
+                              </p>
+                            )}
                           </td>
                           <td className="border border-slate-300 p-1 align-top">
                             <Input
@@ -241,6 +272,19 @@ export function QuotationPreviewTable({
                 ))}
               </Fragment>
             ))}
+            {/* Column total, pinned directly under its own column (not just
+                in the summary box below) so it's unambiguous that this is
+                exactly the sum of the "10DK's work" / purchase cells above
+                it — same rule as the summary box (no qty multiplier,
+                "Option 1 only", see quotationTotals). */}
+            <tr className="bg-slate-100 font-semibold text-slate-900">
+              <td className="border border-slate-300 px-2 py-1.5" colSpan={3}>
+                Total
+              </td>
+              <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(dkWorkSubtotal)}</td>
+              <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(purchaseSubtotal)}</td>
+              <td className="border border-slate-300 px-2 py-1.5"></td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -285,6 +329,9 @@ export function QuotationPreviewTable({
   );
 }
 
+// Prices are summed as-is, NOT multiplied by quantity — quantity is
+// informational only and never factors into the Total, per explicit client
+// instruction. Mirrors backend/app/logic.py's _quotation_row_totals exactly.
 export function quotationTotals(
   rows: QuotationRow[],
   depositDeduction: number = 0
@@ -292,10 +339,9 @@ export function quotationTotals(
   let dkWorkSubtotal = 0;
   let purchaseSubtotal = 0;
   for (const r of rows) {
-    if (r.is_client_owned) continue;
-    const qty = r.quantity || 0;
-    if (r.dk_work_price != null) dkWorkSubtotal += r.dk_work_price * qty;
-    if (r.actual_price_purchase != null) purchaseSubtotal += r.actual_price_purchase * qty;
+    if (r.is_client_owned || !isPricedOption(r.item_name)) continue;
+    if (r.dk_work_price != null) dkWorkSubtotal += r.dk_work_price;
+    if (r.actual_price_purchase != null) purchaseSubtotal += r.actual_price_purchase;
   }
   const vat = dkWorkSubtotal * 0.07;
   const grandTotal = dkWorkSubtotal + vat - (depositDeduction || 0);

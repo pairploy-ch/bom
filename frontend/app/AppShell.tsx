@@ -11,7 +11,6 @@ import {
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
-  Sofa,
   Workflow,
 } from "lucide-react";
 import Link from "next/link";
@@ -81,6 +80,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           step: "quotation" as WorkflowStep,
           done: house.data?.workflow_quotation_done ?? false,
         },
+        {
+          href: `/projects/${params.projectId}/houses/${params.houseId}/contract`,
+          label: "ทำสัญญา",
+          stepNumber: "14",
+          match: "contract",
+          step: "contract" as WorkflowStep,
+          done: house.data?.workflow_contract_done ?? false,
+        },
       ]
     : [];
 
@@ -116,7 +123,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="flex items-center gap-3">
               <Avatar size="md" className="shrink-0 bg-[var(--accent)]/10 text-[var(--accent)]">
                 <Avatar.Fallback>
-                  <Sofa size={18} />
+                  <span className="text-sm font-semibold">{(house.data?.name || "?").charAt(0).toUpperCase()}</span>
                 </Avatar.Fallback>
               </Avatar>
               {!collapsed && (
@@ -128,7 +135,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className={cn("flex items-center gap-3 px-4 py-5", collapsed && "justify-center px-2")}>
             <Avatar size="md" className="shrink-0 bg-[var(--accent)]/10 text-[var(--accent)]">
               <Avatar.Fallback>
-                <Sofa size={18} />
+                <span className="text-sm font-semibold">P</span>
               </Avatar.Fallback>
             </Avatar>
             {!collapsed && (

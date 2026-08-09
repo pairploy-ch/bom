@@ -1,5 +1,8 @@
 import type {
   ColumnMapping,
+  ContractAttachmentMeta,
+  ContractAttachmentUpload,
+  ContractDetails,
   ExportResponse,
   ExportStatus,
   ExportVersionMeta,
@@ -14,6 +17,7 @@ import type {
   PreviewResponse,
   ProjectSummary,
   QuotationBucketMeta,
+  QuotationDetails,
   QuotationPreview,
   QuotationRow,
   RawTextSearchResult,
@@ -265,6 +269,18 @@ export const api = {
       json({ sheet_name: sheetName, rows, column_mapping: columnMapping })
     ),
 
+  // "บันทึก" checkpoint for the quotation page's Preview table (house mode
+  // only) — saves the client/project/date fields + the in-table edited rows
+  // so they survive a reload instead of being recomputed fresh every visit.
+  getQuotationDetails: (id: string) => request<QuotationDetails>(`/houses/${id}/quotation-details`),
+
+  updateQuotationDetails: (id: string, details: QuotationDetails) =>
+    request<QuotationDetails>(`/houses/${id}/quotation-details`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(details),
+    }),
+
   inspectQuotationExcel: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -307,6 +323,42 @@ export const api = {
   // Cache-busted so a freshly-uploaded logo shows up immediately instead of
   // the browser reusing a cached image at the same URL.
   companyLogoUrl: () => `${BASE}/quotation-doc/logo?t=${Date.now()}`,
+
+  // ------------------------------------------------------- contract (สัญญา) --
+
+  getContractDetails: (id: string) => request<ContractDetails>(`/houses/${id}/contract`),
+
+  updateContractDetails: (id: string, details: ContractDetails) =>
+    request<ContractDetails>(`/houses/${id}/contract`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(details),
+    }),
+
+  listContractAttachments: (id: string) => request<ContractAttachmentMeta[]>(`/houses/${id}/contract/attachments`),
+
+  // Replaces the FULL ordered set of attachment pages in one call — pass
+  // every page every time (matches the backend's delete-then-bulk-insert
+  // semantics), simplest correct way to handle reordering/deletes.
+  uploadContractAttachments: (id: string, pages: { meta: ContractAttachmentUpload; blob: Blob }[]) => {
+    const fd = new FormData();
+    pages.forEach((p, i) => fd.append("files", p.blob, `page-${i}.png`));
+    fd.append("pages", JSON.stringify(pages.map((p) => p.meta)));
+    return request<ContractAttachmentMeta[]>(`/houses/${id}/contract/attachments`, { method: "PUT", body: fd });
+  },
+
+  contractAttachmentUrl: (houseId: string, attachmentId: number) =>
+    `${BASE}/houses/${houseId}/contract/attachments/${attachmentId}`,
+
+  downloadContractPdf: (
+    houseId: string,
+    payload: { rows: QuotationRow[]; deposit_deduction: number; remarks: string; grand_total_note: string }
+  ) => requestBlob(`/houses/${houseId}/contract/pdf`, json(payload)),
+
+  downloadContractDocx: (
+    houseId: string,
+    payload: { rows: QuotationRow[]; deposit_deduction: number; remarks: string; grand_total_note: string }
+  ) => requestBlob(`/houses/${houseId}/contract/docx`, json(payload)),
 
   // ------------------------------------------------------------- profile --
 
