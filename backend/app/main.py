@@ -54,6 +54,7 @@ from .schemas import (
     FurnitureItem,
     FurnitureListReplace,
     HouseCreate,
+    HouseRename,
     HouseState,
     HouseSummary,
     LoadingFactorRequest,
@@ -73,9 +74,10 @@ from .schemas import (
     SetMultiplierRequest,
     SetMultiplierResponse,
     TemplateUploadResponse,
+    WorkflowStatusUpdate,
 )
 
-app = FastAPI(title="SSK The Cat Workspace API", version="1.0.0")
+app = FastAPI(title="PM Workspace API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -148,6 +150,8 @@ def _house_state(house_id: str) -> HouseState:
         baseline_furniture_value=row["baseline_furniture_value"],
         quotation_buckets=quotation_buckets,
         has_final_export=row["final_excel_bytes"] is not None,
+        workflow_calc_done=bool(row["workflow_calc_done"]),
+        workflow_quotation_done=bool(row["workflow_quotation_done"]),
         updated_at=row["updated_at"],
     )
 
@@ -246,6 +250,21 @@ def get_house(house_id: str):
     return _house_state(house_id)
 
 
+@app.patch("/api/houses/{house_id}", response_model=HouseSummary)
+def rename_house(house_id: str, body: HouseRename):
+    row = _get_house_or_404(house_id)
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(422, "House name is required.")
+    if name != row["name"]:
+        existing = db.get_house_by_name(row["project_id"], name)
+        if existing is not None and existing["id"] != house_id:
+            raise HTTPException(409, f"A house named '{name}' already exists in this project.")
+    db.rename_house(house_id, name)
+    updated = _get_house_or_404(house_id)
+    return HouseSummary(id=updated["id"], name=updated["name"], updated_at=updated["updated_at"])
+
+
 @app.delete("/api/houses/{house_id}", status_code=204)
 def delete_house(house_id: str):
     _get_house_or_404(house_id)
@@ -257,6 +276,13 @@ def reset_house(house_id: str):
     _get_house_or_404(house_id)
     db.reset_house(house_id)
     return _house_state(house_id)
+
+
+@app.patch("/api/houses/{house_id}/workflow-status")
+def update_workflow_status(house_id: str, body: WorkflowStatusUpdate):
+    _get_house_or_404(house_id)
+    db.set_workflow_step_done(house_id, body.step, body.done)
+    return {"step": body.step, "done": body.done}
 
 
 # ------------------------------------------------------------------ step 1 --

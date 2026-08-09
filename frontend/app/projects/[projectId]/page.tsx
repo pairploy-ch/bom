@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Home } from "lucide-react";
+import { ArrowLeft, Check, Home, Pencil, X } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
@@ -15,6 +15,8 @@ export default function ProjectHousesPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [newName, setNewName] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
 
   const project = useQuery({
     queryKey: ["project", projectId],
@@ -46,11 +48,32 @@ export default function ProjectHousesPage() {
     onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to delete house."),
   });
 
+  const renameMutation = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => api.renameHouse(id, name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["houses", projectId] });
+      setEditingId(null);
+      toast.success("แก้ไขชื่อบ้านแล้ว");
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to rename house."),
+  });
+
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
     const name = newName.trim();
     if (!name) return;
     createMutation.mutate(name);
+  };
+
+  const startEditing = (id: string, currentName: string) => {
+    setEditingId(id);
+    setEditingName(currentName);
+  };
+
+  const submitRename = (id: string) => {
+    const name = editingName.trim();
+    if (!name) return;
+    renameMutation.mutate({ id, name });
   };
 
   return (
@@ -96,24 +119,61 @@ export default function ProjectHousesPage() {
           <p className="text-sm text-slate-500">No houses yet — create one above to get started.</p>
         )}
         <div className="space-y-2">
-          {houses.data?.map((h) => (
-            <Card key={h.id} className="flex flex-row items-center justify-between px-5 py-4">
-              <Link href={`/projects/${projectId}/houses/${h.id}`} className="min-w-0 flex-1">
-                <p className="truncate font-medium text-slate-900 hover:text-indigo-600">{h.name}</p>
-                <p className="text-xs text-slate-400">Last updated {new Date(h.updated_at).toLocaleString()}</p>
-              </Link>
-              <Button
-                variant="danger"
-                onClick={() => {
-                  if (confirm(`Delete house "${h.name}"? This cannot be undone.`)) {
-                    deleteMutation.mutate(h.id);
-                  }
-                }}
-              >
-                Delete
-              </Button>
-            </Card>
-          ))}
+          {houses.data?.map((h) =>
+            editingId === h.id ? (
+              <Card key={h.id} className="flex flex-row items-center gap-2 px-5 py-4">
+                <Input
+                  autoFocus
+                  value={editingName}
+                  onChange={(e) => setEditingName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") submitRename(h.id);
+                    if (e.key === "Escape") setEditingId(null);
+                  }}
+                  disabled={renameMutation.isPending}
+                  className="flex-1"
+                />
+                <Button
+                  variant="secondary"
+                  onClick={() => submitRename(h.id)}
+                  disabled={renameMutation.isPending || !editingName.trim()}
+                >
+                  {renameMutation.isPending ? <Spinner /> : <Check size={16} />}
+                </Button>
+                <Button variant="secondary" onClick={() => setEditingId(null)} disabled={renameMutation.isPending}>
+                  <X size={16} />
+                </Button>
+              </Card>
+            ) : (
+              <Card key={h.id} className="flex flex-row items-center justify-between px-5 py-4">
+                <Link href={`/projects/${projectId}/houses/${h.id}`} className="min-w-0 flex-1">
+                  <p className="truncate font-medium text-slate-900 hover:text-indigo-600">{h.name}</p>
+                  <p className="text-xs text-slate-400">Last updated {new Date(h.updated_at).toLocaleString()}</p>
+                </Link>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => startEditing(h.id, h.name)}
+                    aria-label="แก้ไขชื่อ"
+                    title="แก้ไขชื่อ"
+                    className="rounded-md p-2 text-slate-400 hover:bg-slate-100 hover:text-indigo-600"
+                  >
+                    <Pencil size={16} />
+                  </button>
+                  <Button
+                    variant="danger"
+                    onClick={() => {
+                      if (confirm(`Delete house "${h.name}"? This cannot be undone.`)) {
+                        deleteMutation.mutate(h.id);
+                      }
+                    }}
+                  >
+                    Delete
+                  </Button>
+                </div>
+              </Card>
+            )
+          )}
         </div>
       </section>
     </div>

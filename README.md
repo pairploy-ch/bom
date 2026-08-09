@@ -1,4 +1,4 @@
-# SSK The Cat Workspace
+# PM Workspace
 
 Two implementations live in this repo:
 

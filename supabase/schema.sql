@@ -1,4 +1,4 @@
--- SSK The Cat Workspace — Supabase (Postgres) schema.
+-- PM Workspace — Supabase (Postgres) schema.
 --
 -- Mirrors backend/app/db.py's CREATE TABLE statements exactly (same tables,
 -- columns, relationships) — db.py's own init_db() also applies this DDL

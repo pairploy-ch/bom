@@ -107,8 +107,15 @@ export interface HouseState {
   baseline_furniture_value: number | null;
   quotation_buckets: string[];
   has_final_export: boolean;
+  // User-set checklist toggles for the sidebar's workflow menu — manual, not
+  // derived from any other field (the quotation page never persists a
+  // "generated" state, it's recomputed fresh from mapping_rows every visit).
+  workflow_calc_done: boolean;
+  workflow_quotation_done: boolean;
   updated_at: string;
 }
+
+export type WorkflowStep = "calc" | "quotation";
 
 export interface AltBatchInfo {
   sum_of_item_costs?: number;

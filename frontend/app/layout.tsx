@@ -11,7 +11,7 @@ const kanit = Kanit({
 });
 
 export const metadata: Metadata = {
-  title: "SSK The Cat Workspace",
+  title: "PM Workspace",
   description: "Automated furniture BOM extraction, price matching, and Excel export.",
 };
 

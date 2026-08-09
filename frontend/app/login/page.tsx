@@ -40,7 +40,7 @@ export default function LoginPage() {
               <Sofa size={24} />
             </div>
             <div>
-              <h1 className="text-lg font-semibold text-slate-900">SSK The Cat Workspace</h1>
+              <h1 className="text-lg font-semibold text-slate-900">PM Workspace</h1>
               <p className="text-sm text-slate-500">เข้าสู่ระบบเพื่อใช้งาน</p>
             </div>
           </div>

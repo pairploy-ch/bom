@@ -1,10 +1,11 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Pencil, Sofa } from "lucide-react";
+import { Pencil, Sofa } from "lucide-react";
 import Link from "next/link";
 import { useRef } from "react";
 import { api, ApiError } from "@/lib/api";
+import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { Alert, Card, Spinner } from "@/components/ui/primitives";
 import { useToast } from "@/components/ui/Toast";
 
@@ -17,6 +18,8 @@ export default function HomePage() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const logoInputs = useRef<Record<string, HTMLInputElement | null>>({});
+  const { user } = useSupabaseUser();
+  const displayName = (user?.user_metadata?.display_name as string | undefined) || user?.email || "";
 
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.listProjects });
 
@@ -31,12 +34,8 @@ export default function HomePage() {
 
   return (
     <div className="w-full px-6 py-12">
-      <header className="mb-8 flex items-center gap-3">
-        <Building2 className="text-slate-700" size={28} />
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">โปรเจกต์ทั้งหมด</h1>
-          <p className="mt-1 text-sm text-slate-500">เลือกโปรเจกต์เพื่อดูรายชื่อบ้านทั้งหมดที่อยู่ภายใต้โปรเจกต์นั้น</p>
-        </div>
+      <header className="mb-8">
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900">สวัสดี! {displayName}</h1>
       </header>
 
       {projects.isLoading && (

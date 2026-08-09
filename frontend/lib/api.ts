@@ -19,6 +19,7 @@ import type {
   RawTextSearchResult,
   SetMultiplierResponse,
   TemplateUploadResponse,
+  WorkflowStep,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8010/api";
@@ -96,9 +97,23 @@ export const api = {
 
   getHouse: (id: string) => request<HouseState>(`/houses/${id}`),
 
+  renameHouse: (id: string, name: string) =>
+    request<HouseSummary>(`/houses/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+
   deleteHouse: (id: string) => request<void>(`/houses/${id}`, { method: "DELETE" }),
 
   resetHouse: (id: string) => request<HouseState>(`/houses/${id}/reset`, { method: "POST" }),
+
+  updateWorkflowStatus: (id: string, step: WorkflowStep, done: boolean) =>
+    request<{ step: WorkflowStep; done: boolean }>(`/houses/${id}/workflow-status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ step, done }),
+    }),
 
   // ---------------------------------------------------------------- step 1 --
 

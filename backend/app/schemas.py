@@ -92,6 +92,10 @@ class HouseCreate(BaseModel):
     name: str = Field(min_length=1)
 
 
+class HouseRename(BaseModel):
+    name: str = Field(min_length=1)
+
+
 class HouseState(BaseModel):
     id: str
     project_id: str
@@ -106,7 +110,16 @@ class HouseState(BaseModel):
     baseline_furniture_value: float | None = None
     quotation_buckets: list[str] = []
     has_final_export: bool = False
+    # User-set checklist toggles for the sidebar's workflow menu (คำนวณราคา /
+    # ใบราคา) — manual, not derived from any other field. See WorkflowStatusUpdate.
+    workflow_calc_done: bool = False
+    workflow_quotation_done: bool = False
     updated_at: str
+
+
+class WorkflowStatusUpdate(BaseModel):
+    step: Literal["calc", "quotation"]
+    done: bool
 
 
 # ----------------------------------------------------------------- step 1 --

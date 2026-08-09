@@ -102,6 +102,14 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_houses_project ON houses(project_id, updated_at);
 
+            -- Manual "done" toggles for the sidebar's workflow checklist
+            -- (คำนวณราคา / ใบราคา) — user-set, not derived from any other
+            -- column, since neither step has a reliable auto-detected
+            -- "finished" signal (e.g. the quotation page never persists
+            -- anything, it's regenerated fresh from mapping_rows every time).
+            ALTER TABLE houses ADD COLUMN IF NOT EXISTS workflow_calc_done BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE houses ADD COLUMN IF NOT EXISTS workflow_quotation_done BOOLEAN NOT NULL DEFAULT FALSE;
+
             CREATE TABLE IF NOT EXISTS furniture_items (
                 id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 house_id TEXT NOT NULL REFERENCES houses(id) ON DELETE CASCADE,
@@ -261,6 +269,14 @@ def touch_house(house_id: str) -> None:
         conn.execute("UPDATE houses SET updated_at = %s WHERE id = %s", (_now(), house_id))
 
 
+def rename_house(house_id: str, name: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE houses SET name = %s, updated_at = %s WHERE id = %s",
+            (name, _now(), house_id),
+        )
+
+
 def list_houses(project_id: str) -> list[dict[str, Any]]:
     with get_conn() as conn:
         rows = conn.execute(
@@ -371,6 +387,15 @@ def update_final_export(house_id: str, file_bytes: bytes, source_hash: str) -> N
             "UPDATE houses SET final_excel_bytes = %s, final_excel_source_hash = %s, updated_at = %s WHERE id = %s",
             (file_bytes, source_hash, _now(), house_id),
         )
+
+
+_WORKFLOW_STEP_COLUMNS = {"calc": "workflow_calc_done", "quotation": "workflow_quotation_done"}
+
+
+def set_workflow_step_done(house_id: str, step: str, done: bool) -> None:
+    column = _WORKFLOW_STEP_COLUMNS[step]
+    with get_conn() as conn:
+        conn.execute(f"UPDATE houses SET {column} = %s, updated_at = %s WHERE id = %s", (done, _now(), house_id))
 
 
 # --------------------------------------------------------------- furniture --
