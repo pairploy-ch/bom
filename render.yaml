@@ -4,23 +4,26 @@
 # this file automatically. The `sync: false` env vars are prompted for once
 # at setup time and kept only in Render's dashboard (never committed here).
 #
-# Persistence: SQLite lives on the attached disk at /data, not the repo —
-# `DB_PATH` below points backend/app/config.py at it. Without this disk, an
-# ordinary Render web service filesystem is wiped on every deploy/restart,
-# which would silently lose every project/house.
+# Persistence: the backend is stateless — everything lives in Supabase
+# Postgres via DATABASE_URL (see supabase/README.md), not on this
+# service's own filesystem. That's what makes the free plan viable here:
+# no persistent disk needed, unlike an earlier version of this file that
+# stored SQLite on an attached disk.
 services:
   - type: web
     name: ssk-cat-workspace-backend
     runtime: python
-    plan: starter
+    plan: free
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.7
-      - key: DB_PATH
-        value: /data/bom_backend.db
+      # Supabase Project Settings -> Database -> Connection string ->
+      # "Transaction pooler" (port 6543), password filled in.
+      - key: DATABASE_URL
+        sync: false
       # Comma-separated list of frontend origins allowed to call this API —
       # set to your Vercel deployment URL(s), e.g.
       # https://your-app.vercel.app,https://your-custom-domain.com
@@ -30,7 +33,3 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
-    disk:
-      name: bom-data
-      mountPath: /data
-      sizeGB: 1
