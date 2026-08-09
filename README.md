@@ -1,4 +1,4 @@
-# Furniture BOM & Price Mapping App
+# SSK The Cat Workspace
 
 Two implementations live in this repo:
 

@@ -1,4 +1,4 @@
--- Furniture BOM & Price Mapping — Supabase (Postgres) schema.
+-- SSK The Cat Workspace — Supabase (Postgres) schema.
 --
 -- This is a straight structural port of backend/app/db.py's SQLite schema
 -- (same tables, same columns, same relationships) so the backend's logic —

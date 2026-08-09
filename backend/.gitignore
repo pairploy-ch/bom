@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .env
 bom_backend.db
+*.db.bak
 
 # TP Tankhun's license forbids redistributing the raw font file online
 # (only linking to its f0nt.com download page is allowed) — this repo is

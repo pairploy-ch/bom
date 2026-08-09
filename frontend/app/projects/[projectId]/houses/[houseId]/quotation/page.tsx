@@ -1,31 +1,24 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  ArrowLeft,
-  Building2,
-  Eye,
-  FileEdit,
-  FileText,
-  FolderOpen,
-  NotebookPen,
-  Upload,
-} from "lucide-react";
-import Link from "next/link";
+import { Building2, Eye, FileEdit, FileText, FolderOpen, NotebookPen, Upload } from "lucide-react";
+import { useParams } from "next/navigation";
 import { useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { DEFAULT_COLUMN_MAPPING } from "@/lib/types";
 import type { QuotationPreview as QuotationPreviewData, QuotationRow } from "@/lib/types";
+import { useHouse } from "@/hooks/useHouse";
 import { Alert, Button, Card, CardHeader, Field, Input, Select, Spinner, Textarea } from "@/components/ui/primitives";
 import { QuotationPreviewTable, quotationTotals } from "@/components/QuotationPreview";
 import { useToast } from "@/components/ui/Toast";
 
-type Mode = "project" | "excel";
+type Mode = "house" | "excel";
 
 export default function QuotationPage() {
+  const { houseId } = useParams<{ projectId: string; houseId: string }>();
   const toast = useToast();
   const queryClient = useQueryClient();
-  const [mode, setMode] = useState<Mode>("project");
+  const [mode, setMode] = useState<Mode>("house");
 
   const [clientName, setClientName] = useState("");
   const [projectName, setProjectName] = useState("");
@@ -61,26 +54,20 @@ export default function QuotationPage() {
     if (file) uploadLogo.mutate(file);
   };
 
-  // ------------------------------------------------------- project mode --
+  // --------------------------------------------------------- house mode --
 
-  const projects = useQuery({ queryKey: ["projects"], queryFn: api.listProjects });
-  const [selectedProjectId, setSelectedProjectId] = useState("");
-  const project = useQuery({
-    queryKey: ["project", selectedProjectId],
-    queryFn: () => api.getProject(selectedProjectId),
-    enabled: !!selectedProjectId,
-  });
+  const house = useHouse(houseId);
 
-  const projectPreview = useQuery<QuotationPreviewData>({
-    queryKey: ["quotation-preview-project", selectedProjectId, project.data?.target_sheet_name],
+  const housePreview = useQuery<QuotationPreviewData>({
+    queryKey: ["quotation-preview-house", houseId, house.data?.target_sheet_name],
     queryFn: () =>
-      api.previewQuotationFromProject(
-        selectedProjectId,
-        project.data!.target_sheet_name!,
-        project.data!.mapping_rows,
+      api.previewQuotationFromHouse(
+        houseId,
+        house.data!.target_sheet_name!,
+        house.data!.mapping_rows,
         DEFAULT_COLUMN_MAPPING
       ),
-    enabled: !!selectedProjectId && !!project.data?.target_sheet_name && (project.data?.mapping_rows.length ?? 0) > 0,
+    enabled: mode === "house" && !!house.data?.target_sheet_name && (house.data?.mapping_rows.length ?? 0) > 0,
   });
 
   // --------------------------------------------------------- excel mode --
@@ -103,7 +90,7 @@ export default function QuotationPage() {
   const excelPreview = useQuery<QuotationPreviewData>({
     queryKey: ["quotation-preview-excel", excelFile?.name, excelSheetName],
     queryFn: () => api.previewQuotationFromExcel(excelFile as File, excelSheetName),
-    enabled: !!excelFile && !!excelSheetName,
+    enabled: mode === "excel" && !!excelFile && !!excelSheetName,
   });
 
   const handleExcelFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -111,17 +98,18 @@ export default function QuotationPage() {
     if (file) inspectExcel.mutate(file);
   };
 
-  const preview = mode === "project" ? projectPreview : excelPreview;
-  const hasSource = mode === "project" ? !!selectedProjectId : !!excelFile;
+  const preview = mode === "house" ? housePreview : excelPreview;
+  const hasSource = mode === "house" ? !!house.data : !!excelFile;
 
   // ---------------------------------------------------- editable rows --
   // Local copy the user can tweak in place (item name/qty/prices/remark)
-  // without needing to go back to the source project or Excel file —
-  // re-synced only when a NEW preview result comes in (new project/file
-  // picked), never overwritten by an in-place edit. Reset-on-prop-change via
-  // a render-time comparison (react.dev's recommended pattern), not an
-  // effect — an effect here would setState synchronously on every render
-  // where preview.data changed, one render late and lint-flagged.
+  // without needing to go back to the source house or Excel file —
+  // re-synced only when a NEW preview result comes in (mode switched, or a
+  // new Excel file picked), never overwritten by an in-place edit.
+  // Reset-on-prop-change via a render-time comparison (react.dev's
+  // recommended pattern), not an effect — an effect here would setState
+  // synchronously on every render where preview.data changed, one render
+  // late and lint-flagged.
   const [editableRows, setEditableRows] = useState<QuotationRow[] | null>(null);
   const [syncedFrom, setSyncedFrom] = useState<QuotationPreviewData | undefined>(undefined);
   if (preview.data !== syncedFrom) {
@@ -185,10 +173,7 @@ export default function QuotationPage() {
   return (
     <div className="w-full px-6 py-12">
       <header className="mb-8">
-        <Link href="/" className="flex items-center gap-1 text-sm text-indigo-600 hover:underline">
-          <ArrowLeft size={14} /> หน้าแรก
-        </Link>
-        <h1 className="mt-2 flex items-center gap-2 text-2xl font-bold tracking-tight text-slate-900">
+        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-slate-900">
           <FileText size={24} /> ใบเสนอราคา
         </h1>
         <p className="mt-1 text-sm text-slate-500">
@@ -237,7 +222,7 @@ export default function QuotationPage() {
         <nav className="flex gap-1 border-b border-slate-200 px-2 pt-2">
           {(
             [
-              { key: "project" as const, label: "เลือกโปรเจกต์เดิม", icon: FolderOpen },
+              { key: "house" as const, label: "บ้านนี้", icon: FolderOpen },
               { key: "excel" as const, label: "อัปโหลดไฟล์ Excel", icon: Upload },
             ]
           ).map((tab) => (
@@ -258,17 +243,18 @@ export default function QuotationPage() {
         </nav>
 
         <div className="space-y-4 p-5">
-          {mode === "project" && (
-            <Field label="โปรเจกต์">
-              <Select value={selectedProjectId} onChange={(e) => setSelectedProjectId(e.target.value)}>
-                <option value="">-- เลือกโปรเจกต์ --</option>
-                {projects.data?.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
+          {mode === "house" && (
+            <>
+              {house.isLoading && (
+                <div className="flex items-center gap-2 text-sm text-slate-500">
+                  <Spinner /> กำลังโหลดข้อมูลบ้าน…
+                </div>
+              )}
+              {house.isError && <Alert tone="danger">โหลดข้อมูลบ้านนี้ไม่สำเร็จ</Alert>}
+              {house.data && (house.data.mapping_rows.length ?? 0) === 0 && (
+                <Alert tone="warning">บ้านนี้ยังไม่มีข้อมูลราคาที่คำนวณไว้ — ทำ Step 1-3 ให้เสร็จก่อน</Alert>
+              )}
+            </>
           )}
 
           {mode === "excel" && (

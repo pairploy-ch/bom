@@ -63,19 +63,38 @@ class MappingRow(BaseModel):
 
 
 # ---------------------------------------------------------------- projects --
+# Top-level grouping (e.g. "10DK") — holds many houses, see HouseState below.
 
 class ProjectSummary(BaseModel):
     id: str
     name: str
     updated_at: str
+    has_logo: bool = False
 
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1)
 
 
-class ProjectState(BaseModel):
+# ------------------------------------------------------------------ houses --
+# One house = one full BOM (template → furniture list → price matching →
+# quotation) — what this API used to call a "project" before the grouping
+# above existed.
+
+class HouseSummary(BaseModel):
     id: str
+    name: str
+    updated_at: str
+
+
+class HouseCreate(BaseModel):
+    project_id: str
+    name: str = Field(min_length=1)
+
+
+class HouseState(BaseModel):
+    id: str
+    project_id: str
     name: str
     excel_filename: str | None = None
     has_template: bool

@@ -5,12 +5,13 @@ import type {
   ExportVersionMeta,
   FurnitureExtractResponse,
   FurnitureItem,
+  HouseState,
+  HouseSummary,
   LoadingFactorResponse,
   MappingRow,
   MatchPricesResponse,
   MultiplierColumn,
   PreviewResponse,
-  ProjectState,
   ProjectSummary,
   QuotationBucketMeta,
   QuotationPreview,
@@ -60,6 +61,7 @@ async function requestBlob(path: string, init: RequestInit): Promise<Blob> {
 }
 
 // -------------------------------------------------------------- projects --
+// Top-level grouping (e.g. "10DK") — holds many houses (see below).
 
 export const api = {
   health: () => request<{ status: string; openai_configured: boolean }>("/health"),
@@ -68,23 +70,47 @@ export const api = {
 
   createProject: (name: string) => request<ProjectSummary>("/projects", json({ name })),
 
-  getProject: (id: string) => request<ProjectState>(`/projects/${id}`),
+  getProjectSummary: (id: string) => request<ProjectSummary>(`/projects/${id}`),
 
   deleteProject: (id: string) => request<void>(`/projects/${id}`, { method: "DELETE" }),
 
-  resetProject: (id: string) => request<ProjectState>(`/projects/${id}/reset`, { method: "POST" }),
+  uploadProjectLogo: (id: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request<{ updated: boolean }>(`/projects/${id}/logo`, { method: "PUT", body: fd });
+  },
+
+  // Cache-busted so a freshly-uploaded logo shows up immediately instead of
+  // the browser reusing a cached image at the same URL.
+  projectLogoUrl: (id: string) => `${BASE}/projects/${id}/logo?t=${Date.now()}`,
+
+  // ---------------------------------------------------------------- houses --
+  // One house = one full BOM (template -> furniture list -> price matching ->
+  // quotation) — what this app used to call a "project" before the grouping
+  // above existed.
+
+  listHouses: (projectId: string) => request<HouseSummary[]>(`/houses?project_id=${projectId}`),
+
+  createHouse: (projectId: string, name: string) =>
+    request<HouseSummary>("/houses", json({ project_id: projectId, name })),
+
+  getHouse: (id: string) => request<HouseState>(`/houses/${id}`),
+
+  deleteHouse: (id: string) => request<void>(`/houses/${id}`, { method: "DELETE" }),
+
+  resetHouse: (id: string) => request<HouseState>(`/houses/${id}/reset`, { method: "POST" }),
 
   // ---------------------------------------------------------------- step 1 --
 
   uploadTemplate: (id: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return request<TemplateUploadResponse>(`/projects/${id}/template`, { method: "PUT", body: fd });
+    return request<TemplateUploadResponse>(`/houses/${id}/template`, { method: "PUT", body: fd });
   },
 
   setTargetSheet: (id: string, sheetName: string) =>
     request<{ target_sheet_name: string }>(
-      `/projects/${id}/target-sheet?sheet_name=${encodeURIComponent(sheetName)}`,
+      `/houses/${id}/target-sheet?sheet_name=${encodeURIComponent(sheetName)}`,
       { method: "PUT" }
     ),
 
@@ -93,18 +119,18 @@ export const api = {
   extractFurnitureList: (id: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return request<FurnitureExtractResponse>(`/projects/${id}/furniture-list`, { method: "POST", body: fd });
+    return request<FurnitureExtractResponse>(`/houses/${id}/furniture-list`, { method: "POST", body: fd });
   },
 
   updateFurnitureList: (id: string, items: FurnitureItem[]) =>
-    request<FurnitureItem[]>(`/projects/${id}/furniture-list`, {
+    request<FurnitureItem[]>(`/houses/${id}/furniture-list`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ items }),
     }),
 
   groupFurnitureByRoom: (id: string) =>
-    request<FurnitureItem[]>(`/projects/${id}/furniture-list/group-by-room`, { method: "POST" }),
+    request<FurnitureItem[]>(`/houses/${id}/furniture-list/group-by-room`, { method: "POST" }),
 
   // ---------------------------------------------------------------- step 3 --
 
@@ -119,30 +145,30 @@ export const api = {
     files.pmay.forEach((f) => fd.append("pmay_pdfs", f));
     files.other.forEach((f) => fd.append("othermaker_pdfs", f));
     files.purchase.forEach((f) => fd.append("purchase_pdfs", f));
-    return request<MatchPricesResponse>(`/projects/${id}/quotations`, { method: "POST", body: fd });
+    return request<MatchPricesResponse>(`/houses/${id}/quotations`, { method: "POST", body: fd });
   },
 
   updateMappingRows: (id: string, rows: MappingRow[]) =>
-    request<MappingRow[]>(`/projects/${id}/mapping`, {
+    request<MappingRow[]>(`/houses/${id}/mapping`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rows }),
     }),
 
-  getQuotationTexts: (id: string) => request<{ texts: Record<string, string> }>(`/projects/${id}/quotations/texts`),
+  getQuotationTexts: (id: string) => request<{ texts: Record<string, string> }>(`/houses/${id}/quotations/texts`),
 
-  getQuotationPdfs: (id: string) => request<QuotationBucketMeta[]>(`/projects/${id}/quotations/pdfs`),
+  getQuotationPdfs: (id: string) => request<QuotationBucketMeta[]>(`/houses/${id}/quotations/pdfs`),
 
-  quotationPdfUrl: (id: string, pdfId: number) => `${BASE}/projects/${id}/quotations/pdfs/${pdfId}`,
+  quotationPdfUrl: (id: string, pdfId: number) => `${BASE}/houses/${id}/quotations/pdfs/${pdfId}`,
 
   searchQuotationText: (id: string, query: string) =>
-    request<RawTextSearchResult[]>(`/projects/${id}/quotations/search?query=${encodeURIComponent(query)}`, {
+    request<RawTextSearchResult[]>(`/houses/${id}/quotations/search?query=${encodeURIComponent(query)}`, {
       method: "POST",
     }),
 
   preview: (id: string, sheetName: string, rows: MappingRow[], columnMapping: ColumnMapping) =>
     request<PreviewResponse>(
-      `/projects/${id}/preview`,
+      `/houses/${id}/preview`,
       json({ sheet_name: sheetName, rows, column_mapping: columnMapping })
     ),
 
@@ -155,7 +181,7 @@ export const api = {
     columnMapping: ColumnMapping
   ) =>
     request<LoadingFactorResponse>(
-      `/projects/${id}/loading-factor`,
+      `/houses/${id}/loading-factor`,
       json({
         sheet_name: sheetName,
         sum_of_item_costs: sumOfItemCosts,
@@ -172,14 +198,14 @@ export const api = {
     value: number,
     columnMapping: ColumnMapping
   ) =>
-    request<SetMultiplierResponse>(`/projects/${id}/multiplier`, {
+    request<SetMultiplierResponse>(`/houses/${id}/multiplier`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sheet_name: sheetName, column, value, column_mapping: columnMapping }),
     }),
 
   updateBaseline: (id: string, value: number | null) =>
-    request<{ baseline_furniture_value: number | null }>(`/projects/${id}/baseline`, {
+    request<{ baseline_furniture_value: number | null }>(`/houses/${id}/baseline`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value }),
@@ -194,7 +220,7 @@ export const api = {
     baselineFurnitureValue: number | null
   ) =>
     request<ExportResponse>(
-      `/projects/${id}/export`,
+      `/houses/${id}/export`,
       json({
         sheet_name: sheetName,
         rows,
@@ -206,21 +232,21 @@ export const api = {
 
   exportStatus: (id: string, rows: MappingRow[]) =>
     request<ExportStatus>(
-      `/projects/${id}/export/status`,
+      `/houses/${id}/export/status`,
       json({ rows })
     ),
 
-  exportFileUrl: (id: string) => `${BASE}/projects/${id}/export/file`,
+  exportFileUrl: (id: string) => `${BASE}/houses/${id}/export/file`,
 
-  listExportVersions: (id: string) => request<ExportVersionMeta[]>(`/projects/${id}/exports`),
+  listExportVersions: (id: string) => request<ExportVersionMeta[]>(`/houses/${id}/exports`),
 
-  exportVersionFileUrl: (id: string, versionId: number) => `${BASE}/projects/${id}/exports/${versionId}/file`,
+  exportVersionFileUrl: (id: string, versionId: number) => `${BASE}/houses/${id}/exports/${versionId}/file`,
 
   // --------------------------------------------------------- quotation doc --
 
-  previewQuotationFromProject: (id: string, sheetName: string, rows: MappingRow[], columnMapping: ColumnMapping) =>
+  previewQuotationFromHouse: (id: string, sheetName: string, rows: MappingRow[], columnMapping: ColumnMapping) =>
     request<QuotationPreview>(
-      `/projects/${id}/quotation-doc/preview`,
+      `/houses/${id}/quotation-doc/preview`,
       json({ sheet_name: sheetName, rows, column_mapping: columnMapping })
     ),
 
@@ -266,4 +292,14 @@ export const api = {
   // Cache-busted so a freshly-uploaded logo shows up immediately instead of
   // the browser reusing a cached image at the same URL.
   companyLogoUrl: () => `${BASE}/quotation-doc/logo?t=${Date.now()}`,
+
+  // ------------------------------------------------------------- profile --
+
+  uploadUserAvatar: (userId: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request<{ updated: boolean }>(`/profile/${userId}/avatar`, { method: "PUT", body: fd });
+  },
+
+  userAvatarUrl: (userId: string) => `${BASE}/profile/${userId}/avatar?t=${Date.now()}`,
 };

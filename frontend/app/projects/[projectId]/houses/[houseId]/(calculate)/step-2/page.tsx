@@ -5,7 +5,7 @@ import { CheckCircle2, Plus, RotateCw, Search, X } from "lucide-react";
 import { useParams } from "next/navigation";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
-import { useProject, projectKey } from "@/hooks/useProject";
+import { useHouse, houseKey } from "@/hooks/useHouse";
 import type { FurnitureItem } from "@/lib/types";
 import { Alert, Button, Card, CardHeader, EmptyState, Input, Select, Spinner } from "@/components/ui/primitives";
 import { useToast } from "@/components/ui/Toast";
@@ -55,8 +55,8 @@ function promptForNewRoom(): string | null {
 }
 
 export default function Step2Page() {
-  const { id } = useParams<{ id: string }>();
-  const project = useProject(id);
+  const { houseId } = useParams<{ houseId: string }>();
+  const house = useHouse(houseId);
   const queryClient = useQueryClient();
   const toast = useToast();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -66,16 +66,16 @@ export default function Step2Page() {
   const initialized = useRef(false);
 
   useEffect(() => {
-    if (project.data && !initialized.current) {
-      setItems(project.data.furniture_list);
+    if (house.data && !initialized.current) {
+      setItems(house.data.furniture_list);
       initialized.current = true;
     }
-  }, [project.data]);
+  }, [house.data]);
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: projectKey(id) });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: houseKey(houseId) });
 
   const extract = useMutation({
-    mutationFn: (file: File) => api.extractFurnitureList(id, file),
+    mutationFn: (file: File) => api.extractFurnitureList(houseId, file),
     onSuccess: (res) => {
       setItems(res.items);
       invalidate();
@@ -88,13 +88,13 @@ export default function Step2Page() {
   });
 
   const save = useMutation({
-    mutationFn: (next: FurnitureItem[]) => api.updateFurnitureList(id, next),
+    mutationFn: (next: FurnitureItem[]) => api.updateFurnitureList(houseId, next),
     onSuccess: () => invalidate(),
     onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to save."),
   });
 
   const groupByRoomMutation = useMutation({
-    mutationFn: () => api.groupFurnitureByRoom(id),
+    mutationFn: () => api.groupFurnitureByRoom(houseId),
     onSuccess: (grouped) => {
       setItems(grouped);
       invalidate();
@@ -144,7 +144,7 @@ export default function Step2Page() {
     setItems(next);
   };
 
-  if (!project.data?.has_template) {
+  if (!house.data?.has_template) {
     return (
       <Card>
         <CardHeader title="Step 2 — Upload Floor Plan / Furniture List PDF" />

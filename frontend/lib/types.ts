@@ -76,14 +76,26 @@ export interface MappingRow {
   suspicious?: boolean;
 }
 
+// Top-level grouping (e.g. "10DK") — holds many houses, see HouseState below.
 export interface ProjectSummary {
+  id: string;
+  name: string;
+  updated_at: string;
+  has_logo: boolean;
+}
+
+// One house = one full BOM (template -> furniture list -> price matching ->
+// quotation) — what this app used to call a "project" before the grouping
+// above existed.
+export interface HouseSummary {
   id: string;
   name: string;
   updated_at: string;
 }
 
-export interface ProjectState {
+export interface HouseState {
   id: string;
+  project_id: string;
   name: string;
   excel_filename: string | null;
   has_template: boolean;

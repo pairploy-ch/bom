@@ -5,21 +5,21 @@ import { FileUp } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useRef } from "react";
 import { api, ApiError } from "@/lib/api";
-import { useProject, projectKey } from "@/hooks/useProject";
+import { useHouse, houseKey } from "@/hooks/useHouse";
 import { Alert, Card, CardHeader, Spinner } from "@/components/ui/primitives";
 import { useToast } from "@/components/ui/Toast";
 
 export default function Step1Page() {
-  const { id } = useParams<{ id: string }>();
-  const project = useProject(id);
+  const { houseId } = useParams<{ houseId: string }>();
+  const house = useHouse(houseId);
   const queryClient = useQueryClient();
   const toast = useToast();
   const fileInput = useRef<HTMLInputElement>(null);
 
   const upload = useMutation({
-    mutationFn: (file: File) => api.uploadTemplate(id, file),
+    mutationFn: (file: File) => api.uploadTemplate(houseId, file),
     onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: projectKey(id) });
+      queryClient.invalidateQueries({ queryKey: houseKey(houseId) });
       toast.success(`Loaded '${res.excel_filename}' — sheets found: ${res.sheet_names.join(", ")}`);
       if (fileInput.current) fileInput.current.value = "";
     },
@@ -58,10 +58,10 @@ export default function Step1Page() {
           )}
         </label>
 
-        {project.data?.has_template && (
+        {house.data?.has_template && (
           <Alert tone="success">
-            Current template on file: <strong>{project.data.excel_filename}</strong> — sheets:{" "}
-            {project.data.sheet_names.join(", ")}
+            Current template on file: <strong>{house.data.excel_filename}</strong> — sheets:{" "}
+            {house.data.sheet_names.join(", ")}
           </Alert>
         )}
       </div>

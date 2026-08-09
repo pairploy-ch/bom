@@ -24,11 +24,11 @@ import {
 import { useParams } from "next/navigation";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
-import { useProject, projectKey } from "@/hooks/useProject";
+import { useHouse, houseKey } from "@/hooks/useHouse";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useColumnMapping } from "@/components/ColumnMappingContext";
 import { ExcelStylePreview, previewGrandTotal } from "@/components/ExcelStylePreview";
-import type { ExportVersionMeta, MappingRow, PreviewResponse, ProjectState } from "@/lib/types";
+import type { ExportVersionMeta, HouseState, MappingRow, PreviewResponse } from "@/lib/types";
 import { ORDER_TYPES } from "@/lib/types";
 import { Alert, Badge, Button, Card, CardHeader, Field, Input, Select, Spinner, cn } from "@/components/ui/primitives";
 import { useToast } from "@/components/ui/Toast";
@@ -92,10 +92,10 @@ const BUCKETS = [
 type BucketKey = (typeof BUCKETS)[number]["key"];
 
 export default function Step3Page() {
-  const { id } = useParams<{ id: string }>();
-  const project = useProject(id);
+  const { houseId } = useParams<{ houseId: string }>();
+  const house = useHouse(houseId);
 
-  if (!project.data || project.data.furniture_list.length === 0) {
+  if (!house.data || house.data.furniture_list.length === 0) {
     return (
       <Card>
         <CardHeader title="Step 3 — Upload Supplier Quotation & Final Mapping" />
@@ -107,15 +107,15 @@ export default function Step3Page() {
   }
 
   // Separate component so the local "draft" state below can be initialized
-  // directly from the loaded project via lazy useState initializers — no
-  // effect-based sync needed, since this only ever mounts once project data
-  // already exists (the guard above), and remounts cleanly (key={id}) if
-  // the project id changes.
-  return <Step3Content key={id} id={id} initial={project.data} />;
+  // directly from the loaded house via lazy useState initializers — no
+  // effect-based sync needed, since this only ever mounts once house data
+  // already exists (the guard above), and remounts cleanly (key={houseId}) if
+  // the house id changes.
+  return <Step3Content key={houseId} houseId={houseId} initial={house.data} />;
 }
 
-function Step3Content({ id, initial }: { id: string; initial: ProjectState }) {
-  const project = useProject(id);
+function Step3Content({ houseId, initial }: { houseId: string; initial: HouseState }) {
+  const house = useHouse(houseId);
   const queryClient = useQueryClient();
   const toast = useToast();
   const { columnMapping } = useColumnMapping();
@@ -132,12 +132,12 @@ function Step3Content({ id, initial }: { id: string; initial: ProjectState }) {
     management: initial.alt_batch_info?.management_fee || 0,
   });
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: projectKey(id) });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: houseKey(houseId) });
 
   // ---------------------------------------------------------- matching --
 
   const matchPrices = useMutation({
-    mutationFn: () => api.matchPrices(id, sheetName, files),
+    mutationFn: () => api.matchPrices(houseId, sheetName, files),
     onSuccess: (res) => {
       setRows(res.mapping_rows);
       if (res.alt_batch_info) {
@@ -160,7 +160,7 @@ function Step3Content({ id, initial }: { id: string; initial: ProjectState }) {
   // -------------------------------------------------------------- rows --
 
   const saveRows = useMutation({
-    mutationFn: (next: MappingRow[]) => api.updateMappingRows(id, next),
+    mutationFn: (next: MappingRow[]) => api.updateMappingRows(houseId, next),
     onSuccess: (saved) => {
       setRows(saved);
       invalidate();
@@ -207,8 +207,8 @@ function Step3Content({ id, initial }: { id: string; initial: ProjectState }) {
 
   const debouncedRows = useDebouncedValue(rows, 500);
   const preview = useQuery<PreviewResponse>({
-    queryKey: ["preview", id, sheetName, debouncedRows, columnMapping],
-    queryFn: () => api.preview(id, sheetName, debouncedRows, columnMapping),
+    queryKey: ["preview", houseId, sheetName, debouncedRows, columnMapping],
+    queryFn: () => api.preview(houseId, sheetName, debouncedRows, columnMapping),
     enabled: !!sheetName && debouncedRows.length > 0,
   });
 
@@ -230,7 +230,7 @@ function Step3Content({ id, initial }: { id: string; initial: ProjectState }) {
 
   const applyLoadingFactor = useMutation({
     mutationFn: () =>
-      api.applyLoadingFactor(id, sheetName, altInputs.sum, altInputs.protection, altInputs.management, columnMapping),
+      api.applyLoadingFactor(houseId, sheetName, altInputs.sum, altInputs.protection, altInputs.management, columnMapping),
     onSuccess: (res) => {
       invalidate();
       preview.refetch();
@@ -253,7 +253,7 @@ function Step3Content({ id, initial }: { id: string; initial: ProjectState }) {
   }, [altTouched, debouncedAltInputs]);
 
   // ----------------------------------------------------- I / M multipliers --
-  // Unlike Loading Factor (H, computed per-project from the ALT quotation's
+  // Unlike Loading Factor (H, computed per-house from the ALT quotation's
   // own numbers), I ("+5%+VAT7%") and M (10DK profit) are fixed business
   // constants that must live in the Excel template — these just write
   // whatever the user types directly into the I5/M5 anchor cells.
@@ -266,7 +266,7 @@ function Step3Content({ id, initial }: { id: string; initial: ProjectState }) {
 
   const setMultiplier = useMutation({
     mutationFn: (vars: { column: "i" | "m"; value: number }) =>
-      api.setMultiplier(id, sheetName, vars.column, vars.value, columnMapping),
+      api.setMultiplier(houseId, sheetName, vars.column, vars.value, columnMapping),
     onSuccess: (res) => {
       invalidate();
       preview.refetch();
@@ -330,7 +330,7 @@ function Step3Content({ id, initial }: { id: string; initial: ProjectState }) {
   // ---------------------------------------------------------- baseline --
 
   const saveBaseline = useMutation({
-    mutationFn: (value: number | null) => api.updateBaseline(id, value),
+    mutationFn: (value: number | null) => api.updateBaseline(houseId, value),
     onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to save baseline."),
   });
 
@@ -340,23 +340,24 @@ function Step3Content({ id, initial }: { id: string; initial: ProjectState }) {
   const mappingGroups = groupMappingRowsByRoom(rows);
   const notFoundItems = useMemo(() => rows.filter((r) => r.item_name.includes("[Price Not Found]")), [rows]);
   const [notFoundOpen, setNotFoundOpen] = useState(true);
-  const hasQuotations = (project.data?.quotation_buckets.length ?? 0) > 0;
+  const hasQuotations = (house.data?.quotation_buckets.length ?? 0) > 0;
 
   const rawTexts = useQuery({
-    queryKey: ["quotation-texts", id],
-    queryFn: () => api.getQuotationTexts(id),
+    queryKey: ["quotation-texts", houseId],
+    queryFn: () => api.getQuotationTexts(houseId),
     enabled: hasQuotations,
   });
   const pdfFiles = useQuery({
-    queryKey: ["quotation-pdfs", id],
-    queryFn: () => api.getQuotationPdfs(id),
+    queryKey: ["quotation-pdfs", houseId],
+    queryFn: () => api.getQuotationPdfs(houseId),
     enabled: hasQuotations,
   });
 
   // --------------------------------------------------------------- export --
 
   const exportExcel = useMutation({
-    mutationFn: () => api.exportExcel(id, sheetName, rows, columnMapping, grandTotal, baseline ? baselineNum : null),
+    mutationFn: () =>
+      api.exportExcel(houseId, sheetName, rows, columnMapping, grandTotal, baseline ? baselineNum : null),
     onSuccess: (res) => {
       invalidate();
       exportStatus.refetch();
@@ -368,19 +369,19 @@ function Step3Content({ id, initial }: { id: string; initial: ProjectState }) {
   });
 
   const exportStatus = useQuery({
-    queryKey: ["export-status", id, rows],
-    queryFn: () => api.exportStatus(id, rows),
-    enabled: !!project.data?.has_final_export,
+    queryKey: ["export-status", houseId, rows],
+    queryFn: () => api.exportStatus(houseId, rows),
+    enabled: !!house.data?.has_final_export,
   });
 
   const exportVersions = useQuery<ExportVersionMeta[]>({
-    queryKey: ["export-versions", id],
-    queryFn: () => api.listExportVersions(id),
-    enabled: !!project.data?.has_final_export,
+    queryKey: ["export-versions", houseId],
+    queryFn: () => api.listExportVersions(houseId),
+    enabled: !!house.data?.has_final_export,
   });
 
-  const sheetNames = project.data?.sheet_names ?? initial.sheet_names;
-  const hasFinalExport = project.data?.has_final_export ?? initial.has_final_export;
+  const sheetNames = house.data?.sheet_names ?? initial.sheet_names;
+  const hasFinalExport = house.data?.has_final_export ?? initial.has_final_export;
 
   return (
     <div className="space-y-6">
@@ -589,7 +590,7 @@ function Step3Content({ id, initial }: { id: string; initial: ProjectState }) {
                       {pdfFiles.data.map((f) => (
                         <li key={f.id}>
                           <a
-                            href={api.quotationPdfUrl(id, f.id)}
+                            href={api.quotationPdfUrl(houseId, f.id)}
                             target="_blank"
                             rel="noreferrer"
                             className="flex items-center gap-1.5 text-indigo-600 hover:underline"
@@ -805,7 +806,7 @@ function Step3Content({ id, initial }: { id: string; initial: ProjectState }) {
               {notFoundOpen && (
                 <div className="space-y-4 p-5">
                   {notFoundItems.map((item, i) => (
-                    <NotFoundSearch key={i} projectId={id} itemName={item.item_name} />
+                    <NotFoundSearch key={i} houseId={houseId} itemName={item.item_name} />
                   ))}
                 </div>
               )}
@@ -860,7 +861,7 @@ function Step3Content({ id, initial }: { id: string; initial: ProjectState }) {
                         </Alert>
                       )}
                       <a
-                        href={api.exportFileUrl(id)}
+                        href={api.exportFileUrl(houseId)}
                         className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
                       >
                         <Download size={16} /> Download Completed Excel File
@@ -886,7 +887,7 @@ function Step3Content({ id, initial }: { id: string; initial: ProjectState }) {
                             )}
                           </span>
                           <a
-                            href={api.exportVersionFileUrl(id, v.id)}
+                            href={api.exportVersionFileUrl(houseId, v.id)}
                             className="flex items-center gap-1.5 text-indigo-600 hover:underline"
                           >
                             <Download size={14} /> ดาวน์โหลด
@@ -914,13 +915,13 @@ function Stat({ label, value, highlight }: { label: string; value: string; highl
   );
 }
 
-function NotFoundSearch({ projectId, itemName }: { projectId: string; itemName: string }) {
+function NotFoundSearch({ houseId, itemName }: { houseId: string; itemName: string }) {
   const cleanName = itemName.split(" [")[0].trim();
   const [query, setQuery] = useState(cleanName);
   const debouncedQuery = useDebouncedValue(query, 400);
   const results = useQuery({
-    queryKey: ["quotation-search", projectId, debouncedQuery],
-    queryFn: () => api.searchQuotationText(projectId, debouncedQuery),
+    queryKey: ["quotation-search", houseId, debouncedQuery],
+    queryFn: () => api.searchQuotationText(houseId, debouncedQuery),
     enabled: debouncedQuery.trim().length >= 2,
   });
 

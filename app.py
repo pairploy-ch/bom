@@ -1,5 +1,5 @@
 """
-Automated Furniture BOM & Price Mapping Web App
+SSK The Cat Workspace
 =================================================
 
 A 3-step Streamlit pipeline that:
@@ -67,7 +67,7 @@ OPENAI_TIMEOUT_SECONDS = 60
 OPENAI_MAX_RETRIES = 2
 
 st.set_page_config(
-    page_title="Furniture BOM & Price Mapping",
+    page_title="SSK The Cat Workspace",
     page_icon="🛋️",
     layout="wide",
 )
@@ -2244,7 +2244,7 @@ def main():
             st.session_state.project_name = url_project
             st.toast(f"📂 กู้คืนโปรเจกต์ '{url_project}' จากการรีเฟรชแล้ว", icon="✅")
 
-    st.title("🛋️ Automated Furniture BOM & Price Mapping")
+    st.title("🐱 SSK The Cat Workspace")
     st.caption(
         "Upload an Excel BOM template, a floor-plan furniture list PDF, and a supplier "
         "quotation PDF — this app extracts, semantically matches, and fills in prices "
