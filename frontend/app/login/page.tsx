@@ -1,6 +1,7 @@
 "use client";
 
 import { LogIn, Sofa } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { Alert, Button, Card, Field, Input, Spinner } from "@/components/ui/primitives";
@@ -66,6 +67,11 @@ export default function LoginPage() {
                 required
               />
             </Field>
+            <div className="text-right">
+              <Link href="/forgot-password" className="text-xs text-slate-500 hover:text-[var(--accent)]">
+                ลืมรหัสผ่าน?
+              </Link>
+            </div>
             <Button type="submit" className="w-full" disabled={loading}>
               {loading ? <Spinner /> : <LogIn size={16} />}
               เข้าสู่ระบบ
