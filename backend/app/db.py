@@ -64,7 +64,16 @@ def _coerce_bytea(row: dict[str, Any] | None, *columns: str) -> dict[str, Any] |
 
 @contextlib.contextmanager
 def get_conn() -> Iterator[psycopg.Connection]:
-    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    # prepare_threshold=None disables psycopg3's automatic server-side
+    # prepared statements. DATABASE_URL points at Supabase's "Transaction
+    # pooler" (PgBouncer, transaction mode) — it hands out a shared backend
+    # connection per transaction, so a prepared statement name like "_pg3_0"
+    # from one request can still be registered on that backend connection
+    # when a totally unrelated request lands on it next, raising
+    # psycopg.errors.DuplicatePreparedStatement. executemany() is what
+    # triggers auto-prepare, which is why this only showed up on bulk
+    # inserts (e.g. uploading multiple PDFs at once).
+    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, prepare_threshold=None)
     try:
         yield conn
         conn.commit()
