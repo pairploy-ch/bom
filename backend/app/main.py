@@ -651,6 +651,7 @@ def apply_loading_factor(house_id: str, body: LoadingFactorRequest):
     updated = current_value is None or abs(current_value - new_value) > 0.00005
     if updated:
         ws[anchor_cell] = new_value
+        wb.calculation.fullCalcOnLoad = True  # see write_mapping_to_excel's comment on this
         out = io.BytesIO()
         wb.save(out)
         db.update_excel_bytes(house_id, out.getvalue())
@@ -690,6 +691,7 @@ def set_multiplier(house_id: str, body: SetMultiplierRequest):
     updated = current_value is None or abs(current_value - new_value) > 0.00005
     if updated:
         ws[anchor_cell] = new_value
+        wb.calculation.fullCalcOnLoad = True  # see write_mapping_to_excel's comment on this
         out = io.BytesIO()
         wb.save(out)
         db.update_excel_bytes(house_id, out.getvalue())

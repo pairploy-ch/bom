@@ -646,6 +646,17 @@ def write_mapping_to_excel(
             summary_row += 1
             ws.cell(row=summary_row, column=item_idx).value = f"ราคารวมสุทธิ: {net_total:,.0f} บาท"
 
+        # openpyxl never computes the price formulas it just wrote (H/I/J/K/L/M/Q
+        # above) — no cached value at all. If the uploaded template was saved
+        # with Excel's Manual calculation mode (common in heavy BOM/finance
+        # templates), that setting round-trips untouched through load/save, so
+        # Excel would open this file and show those cells blank/0 until the
+        # user manually presses F9 — silently disagreeing with the preview
+        # (compute_price_preview), which always shows the fully computed
+        # numbers. Forcing a full recalc on open fixes this regardless of the
+        # template's own calc mode.
+        wb.calculation.fullCalcOnLoad = True
+
         output = io.BytesIO()
         wb.save(output)
         return output.getvalue(), warnings
