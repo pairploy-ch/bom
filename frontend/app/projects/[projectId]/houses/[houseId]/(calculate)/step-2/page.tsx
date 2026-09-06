@@ -18,7 +18,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, GripVertical, Plus, RotateCw, Search, X } from "lucide-react";
+import { CheckCircle2, GripVertical, Plus, RotateCw, Save, Search, X } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
@@ -99,6 +99,7 @@ export default function Step2Page() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
   const [justAddedKey, setJustAddedKey] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
   const initialized = useRef(false);
 
   const sensors = useSensors(
@@ -113,12 +114,22 @@ export default function Step2Page() {
     }
   }, [house.data]);
 
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
+
   const invalidate = () => queryClient.invalidateQueries({ queryKey: houseKey(houseId) });
 
   const extract = useMutation({
     mutationFn: (file: File) => api.extractFurnitureList(houseId, file),
     onSuccess: (res) => {
       setRows(res.items.map((item) => ({ key: makeKey(), item })));
+      setDirty(false);
       invalidate();
       toast.success(`Extracted ${res.items.length} furniture item(s).`);
       if (res.warning) toast.warning(res.warning);
@@ -130,7 +141,10 @@ export default function Step2Page() {
 
   const save = useMutation({
     mutationFn: (next: FurnitureItem[]) => api.updateFurnitureList(houseId, next),
-    onSuccess: () => invalidate(),
+    onSuccess: () => {
+      setDirty(false);
+      invalidate();
+    },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to save."),
   });
 
@@ -138,51 +152,45 @@ export default function Step2Page() {
     mutationFn: () => api.groupFurnitureByRoom(houseId),
     onSuccess: (grouped) => {
       setRows(grouped.map((item) => ({ key: makeKey(), item })));
+      setDirty(false);
       invalidate();
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to group by room."),
   });
 
-  const commit = (next?: Row[]) => save.mutate((next ?? rows).map((r) => r.item));
-
-  // Local-only edit (item name / spec / quantity commit on blur, see ItemRow).
+  // Every edit below is local-only — nothing hits the server until the
+  // "บันทึก" button (handleSave) is clicked.
   const updateRow = (key: string, patch: Partial<FurnitureItem>) => {
     setRows((prev) => prev.map((r) => (r.key === key ? { ...r, item: { ...r.item, ...patch } } : r)));
-  };
-
-  // Edit that should save immediately (checkbox, room reassignment).
-  const updateAndCommit = (key: string, patch: Partial<FurnitureItem>) => {
-    const next = rows.map((r) => (r.key === key ? { ...r, item: { ...r.item, ...patch } } : r));
-    setRows(next);
-    commit(next);
+    setDirty(true);
   };
 
   const removeRow = (key: string) => {
-    const next = rows.filter((r) => r.key !== key);
-    setRows(next);
-    commit(next);
+    setRows((prev) => prev.filter((r) => r.key !== key));
+    setDirty(true);
   };
 
   const handleRoomChange = (key: string, value: string) => {
     if (value === NEW_ROOM_OPTION) {
       const name = promptForNewRoom();
       if (name === null) return;
-      updateAndCommit(key, { room: name });
+      updateRow(key, { room: name });
       return;
     }
-    updateAndCommit(key, { room: value });
+    updateRow(key, { room: value });
   };
 
-  // Renames every row in a room group as the header input is typed —
-  // committed to the server on blur, matching the other text fields here.
+  // Renames every row in a room group as the header input is typed.
   const renameRoom = (oldRoom: string, newRoom: string) => {
     setRows((prev) => prev.map((r) => (r.item.room === oldRoom ? { ...r, item: { ...r.item, room: newRoom } } : r)));
+    setDirty(true);
   };
 
   const addRowToRoom = (room: string) => {
     const key = makeKey();
     setRows((prev) => [...prev, { key, item: emptyRow(room) }]);
     setJustAddedKey(key);
+    setDirty(true);
   };
 
   const handleAddNewRoom = () => {
@@ -198,9 +206,8 @@ export default function Step2Page() {
     const oldIndex = groups.findIndex((g) => roomId(g.room) === active.id);
     const newIndex = groups.findIndex((g) => roomId(g.room) === over.id);
     if (oldIndex === -1 || newIndex === -1) return;
-    const next = flatten(arrayMove(groups, oldIndex, newIndex));
-    setRows(next);
-    commit(next);
+    setRows(flatten(arrayMove(groups, oldIndex, newIndex)));
+    setDirty(true);
   };
 
   const handleItemDragEnd = (room: string, event: DragEndEvent) => {
@@ -215,10 +222,11 @@ export default function Step2Page() {
     if (oldIndex === -1 || newIndex === -1) return;
     const nextGroups = groups.slice();
     nextGroups[gi] = { room, entries: arrayMove(entries, oldIndex, newIndex) };
-    const next = flatten(nextGroups);
-    setRows(next);
-    commit(next);
+    setRows(flatten(nextGroups));
+    setDirty(true);
   };
+
+  const handleSave = () => save.mutate(rows.map((r) => r.item));
 
   if (!house.data?.has_template) {
     return (
@@ -252,7 +260,7 @@ export default function Step2Page() {
             />
             <Button
               onClick={() => selectedFile && extract.mutate(selectedFile)}
-              disabled={!selectedFile || extract.isPending}
+              disabled={!selectedFile || extract.isPending || dirty}
             >
               {extract.isPending ? <Spinner /> : <Search size={16} />}
               Extract Furniture List
@@ -260,6 +268,7 @@ export default function Step2Page() {
           </div>
           <p className="text-xs text-slate-400">
             AI จะพยายามดึง &quot;สเปค&quot; (ขนาด/วัสดุ) ของแต่ละชิ้นมาด้วยถ้าระบุไว้ในเอกสาร — แก้ไขหรือเพิ่มเองได้ในตารางด้านล่าง
+            {dirty && " (บันทึกการแก้ไขด้านล่างก่อน ถึงจะ extract ใหม่ได้ — ไม่งั้นการแก้ไขที่ยังไม่บันทึกจะหายไป)"}
           </p>
         </div>
       </Card>
@@ -267,9 +276,10 @@ export default function Step2Page() {
       <Card>
         <CardHeader
           title="Extracted Furniture List"
-          description="ลากที่จุดจับด้านซ้ายเพื่อย้ายลำดับรายการ/ห้อง, แก้ชื่อห้องได้ตรงแถบหัวห้อง, ติ๊กถูก = นำไปจับคู่ราคาต่อที่ Step 3"
+          description="ลากที่จุดจับด้านซ้ายเพื่อย้ายลำดับรายการ/ห้อง, แก้ชื่อห้องได้ตรงแถบหัวห้อง, ติ๊กถูก = นำไปจับคู่ราคาต่อที่ Step 3 — แก้ไขเสร็จแล้วอย่าลืมกด &quot;บันทึก&quot;"
           right={
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
+              {dirty && <span className="text-xs font-medium text-amber-600">มีการแก้ไขที่ยังไม่บันทึก</span>}
               <Button variant="secondary" onClick={handleAddNewRoom}>
                 <Plus size={16} /> ห้องใหม่
               </Button>
@@ -277,11 +287,15 @@ export default function Step2Page() {
                 <Button
                   variant="secondary"
                   onClick={() => groupByRoomMutation.mutate()}
-                  disabled={groupByRoomMutation.isPending}
+                  disabled={groupByRoomMutation.isPending || dirty}
                 >
                   <RotateCw size={16} /> จัดกลุ่มตามห้อง
                 </Button>
               )}
+              <Button onClick={handleSave} disabled={!dirty || save.isPending}>
+                {save.isPending ? <Spinner /> : <Save size={16} />}
+                บันทึก
+              </Button>
             </div>
           }
         />
@@ -303,12 +317,10 @@ export default function Step2Page() {
                         justAddedKey={justAddedKey}
                         onAutoFocused={() => setJustAddedKey(null)}
                         onRenameRoom={renameRoom}
-                        onRenameCommit={() => commit()}
                         onAddItem={addRowToRoom}
                         onUpdateRow={updateRow}
-                        onCommitRow={() => commit()}
                         onRoomChangeForItem={handleRoomChange}
-                        onToggleVerified={(key, verified) => updateAndCommit(key, { verified })}
+                        onToggleVerified={(key, verified) => updateRow(key, { verified })}
                         onRemoveRow={removeRow}
                         onItemDragEnd={handleItemDragEnd}
                         sensors={sensors}
@@ -334,10 +346,8 @@ interface RoomBlockProps {
   justAddedKey: string | null;
   onAutoFocused: () => void;
   onRenameRoom: (oldRoom: string, newRoom: string) => void;
-  onRenameCommit: () => void;
   onAddItem: (room: string) => void;
   onUpdateRow: (key: string, patch: Partial<FurnitureItem>) => void;
-  onCommitRow: () => void;
   onRoomChangeForItem: (key: string, value: string) => void;
   onToggleVerified: (key: string, verified: boolean) => void;
   onRemoveRow: (key: string) => void;
@@ -351,10 +361,8 @@ function RoomBlock({
   justAddedKey,
   onAutoFocused,
   onRenameRoom,
-  onRenameCommit,
   onAddItem,
   onUpdateRow,
-  onCommitRow,
   onRoomChangeForItem,
   onToggleVerified,
   onRemoveRow,
@@ -385,7 +393,6 @@ function RoomBlock({
         <input
           value={group.room}
           onChange={(e) => onRenameRoom(group.room, e.target.value)}
-          onBlur={onRenameCommit}
           placeholder={UNSPECIFIED_LABEL}
           className="min-w-0 flex-1 rounded bg-transparent px-1.5 py-0.5 font-medium text-white outline-none placeholder:text-slate-400 focus:bg-white/10"
         />
@@ -429,7 +436,6 @@ function RoomBlock({
                 autoFocus={entry.key === justAddedKey}
                 onAutoFocused={onAutoFocused}
                 onUpdate={(patch) => onUpdateRow(entry.key, patch)}
-                onCommit={onCommitRow}
                 onToggleVerified={(verified) => onToggleVerified(entry.key, verified)}
                 onRoomChange={(value) => onRoomChangeForItem(entry.key, value)}
                 onRemove={() => onRemoveRow(entry.key)}
@@ -448,7 +454,6 @@ interface ItemRowProps {
   autoFocus: boolean;
   onAutoFocused: () => void;
   onUpdate: (patch: Partial<FurnitureItem>) => void;
-  onCommit: () => void;
   onToggleVerified: (verified: boolean) => void;
   onRoomChange: (value: string) => void;
   onRemove: () => void;
@@ -460,7 +465,6 @@ function ItemRow({
   autoFocus,
   onAutoFocused,
   onUpdate,
-  onCommit,
   onToggleVerified,
   onRoomChange,
   onRemove,
@@ -489,7 +493,6 @@ function ItemRow({
       <Input
         value={item.item_name}
         onChange={(e) => onUpdate({ item_name: e.target.value })}
-        onBlur={onCommit}
         autoFocus={autoFocus}
         onFocus={onAutoFocused}
       />
@@ -497,14 +500,12 @@ function ItemRow({
         value={item.spec}
         placeholder="เช่น 180x200cm, ไม้วีเนียร์"
         onChange={(e) => onUpdate({ spec: e.target.value })}
-        onBlur={onCommit}
       />
       <Input
         type="number"
         min={0}
         value={item.quantity}
         onChange={(e) => onUpdate({ quantity: Number(e.target.value) || 0 })}
-        onBlur={onCommit}
       />
       <Select value={item.room} onChange={(e) => onRoomChange(e.target.value)}>
         {rooms.map((r) => (

@@ -15,6 +15,7 @@ import {
   Paperclip,
   Pencil,
   Ruler,
+  Save,
   Search,
   Settings,
   ShoppingCart,
@@ -123,6 +124,7 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
   const [sheetName, setSheetName] = useState(initial.target_sheet_name || initial.sheet_names[0] || "");
   const [files, setFiles] = useState<Record<BucketKey, File[]>>({ alt: [], pmay: [], other: [], purchase: [] });
   const [rows, setRows] = useState<MappingRow[]>(initial.mapping_rows);
+  const [rowsDirty, setRowsDirty] = useState(false);
   const [baseline, setBaseline] = useState<string>(
     initial.baseline_furniture_value != null ? String(initial.baseline_furniture_value) : ""
   );
@@ -134,12 +136,20 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: houseKey(houseId) });
 
+  useEffect(() => {
+    if (!rowsDirty) return;
+    const handler = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [rowsDirty]);
+
   // ---------------------------------------------------------- matching --
 
   const matchPrices = useMutation({
     mutationFn: () => api.matchPrices(houseId, sheetName, files),
     onSuccess: (res) => {
       setRows(res.mapping_rows);
+      setRowsDirty(false);
       if (res.alt_batch_info) {
         setAltInputs({
           sum: res.alt_batch_info.sum_of_item_costs || 0,
@@ -163,20 +173,23 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
     mutationFn: (next: MappingRow[]) => api.updateMappingRows(houseId, next),
     onSuccess: (saved) => {
       setRows(saved);
+      setRowsDirty(false);
       invalidate();
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to save."),
   });
 
-  const updateRow = (index: number, patch: Partial<MappingRow>) =>
+  // Local-only — nothing hits the server until the "บันทึก" button is clicked.
+  const updateRow = (index: number, patch: Partial<MappingRow>) => {
     setRows((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+    setRowsDirty(true);
+  };
 
-  const commitRows = (next?: MappingRow[]) => saveRows.mutate(next ?? rows);
+  const handleSaveRows = () => saveRows.mutate(rows);
 
   const removeRow = (index: number) => {
-    const next = rows.filter((_, i) => i !== index);
-    setRows(next);
-    commitRows(next);
+    setRows((prev) => prev.filter((_, i) => i !== index));
+    setRowsDirty(true);
   };
 
   const roomOptions = useMemo(() => {
@@ -196,11 +209,9 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
       const name = promptForNewRoom();
       if (name === null) return;
       updateRow(index, { room: name });
-      commitRows(rows.map((r, i) => (i === index ? { ...r, room: name } : r)));
       return;
     }
     updateRow(index, { room: value });
-    commitRows(rows.map((r, i) => (i === index ? { ...r, room: value } : r)));
   };
 
   // ----------------------------------------------------------- preview --
@@ -424,10 +435,18 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
             ))}
           </div>
 
-          <Button onClick={() => matchPrices.mutate()} disabled={!hasAnyUpload || !sheetName || matchPrices.isPending}>
+          <Button
+            onClick={() => matchPrices.mutate()}
+            disabled={!hasAnyUpload || !sheetName || matchPrices.isPending || rowsDirty}
+          >
             {matchPrices.isPending ? <Spinner /> : <Link2 size={16} />}
             Match Prices &amp; Generate Excel
           </Button>
+          {rowsDirty && (
+            <p className="text-xs text-amber-600">
+              บันทึกการแก้ไขในตารางด้านล่างก่อน ถึงจะจับคู่ราคาใหม่ได้ — ไม่งั้นการแก้ไขที่ยังไม่บันทึกจะหายไป
+            </p>
+          )}
         </div>
       </Card>
 
@@ -610,7 +629,16 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
             <CardHeader
               icon={<Pencil size={16} />}
               title="ตรวจสอบและแก้ไขก่อนบันทึก"
-              description="เลือกประเภทให้ถูกต้องต่อรายการ ตาม 3 วิธีคิดราคา — ดูคำอธิบายในแต่ละช่อง"
+              description="เลือกประเภทให้ถูกต้องต่อรายการ ตาม 3 วิธีคิดราคา — ดูคำอธิบายในแต่ละช่อง — แก้ไขเสร็จแล้วอย่าลืมกด &quot;บันทึก&quot;"
+              right={
+                <div className="flex items-center gap-2">
+                  {rowsDirty && <span className="text-xs font-medium text-amber-600">มีการแก้ไขที่ยังไม่บันทึก</span>}
+                  <Button onClick={handleSaveRows} disabled={!rowsDirty || saveRows.isPending}>
+                    {saveRows.isPending ? <Spinner /> : <Save size={16} />}
+                    บันทึก
+                  </Button>
+                </div>
+              }
             />
             <div className="p-5">
               {suspiciousItems.length > 0 && (
@@ -680,7 +708,6 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                               <Input
                                 value={row.item_name}
                                 onChange={(e) => updateRow(i, { item_name: e.target.value })}
-                                onBlur={() => commitRows()}
                                 className={isNotFound ? "text-red-600 font-medium" : undefined}
                               />
                               {row.suspicious && (
@@ -703,7 +730,6 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                                 value={row.spec}
                                 placeholder="เช่น 180x200cm, ไม้วีเนียร์"
                                 onChange={(e) => updateRow(i, { spec: e.target.value })}
-                                onBlur={() => commitRows()}
                               />
                             </td>
                             <td className="py-1.5 pr-2">
@@ -711,17 +737,12 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                                 type="number"
                                 value={row.quantity}
                                 onChange={(e) => updateRow(i, { quantity: Number(e.target.value) || 0 })}
-                                onBlur={() => commitRows()}
                               />
                             </td>
                             <td className="py-1.5 pr-2">
                               <Select
                                 value={row.order_type}
-                                onChange={(e) => {
-                                  const next = e.target.value as MappingRow["order_type"];
-                                  updateRow(i, { order_type: next });
-                                  commitRows(rows.map((r, idx) => (idx === i ? { ...r, order_type: next } : r)));
-                                }}
+                                onChange={(e) => updateRow(i, { order_type: e.target.value as MappingRow["order_type"] })}
                               >
                                 {ORDER_TYPES.map((t) => (
                                   <option key={t} value={t}>
@@ -735,7 +756,6 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                                 type="number"
                                 value={row.alt_price}
                                 onChange={(e) => updateRow(i, { alt_price: Number(e.target.value) || 0 })}
-                                onBlur={() => commitRows()}
                               />
                             </td>
                             <td className="py-1.5 pr-2">
@@ -743,7 +763,6 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                                 type="number"
                                 value={row.pmay_price}
                                 onChange={(e) => updateRow(i, { pmay_price: Number(e.target.value) || 0 })}
-                                onBlur={() => commitRows()}
                               />
                             </td>
                             <td className="py-1.5 pr-2">
@@ -751,7 +770,6 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                                 type="number"
                                 value={row.other_maker_price}
                                 onChange={(e) => updateRow(i, { other_maker_price: Number(e.target.value) || 0 })}
-                                onBlur={() => commitRows()}
                               />
                             </td>
                             <td className="py-1.5 pr-2">
@@ -759,11 +777,10 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                                 type="number"
                                 value={row.unit_price}
                                 onChange={(e) => updateRow(i, { unit_price: Number(e.target.value) || 0 })}
-                                onBlur={() => commitRows()}
                               />
                             </td>
                             <td className="py-1.5 pr-2">
-                              <Input value={row.supplier} onChange={(e) => updateRow(i, { supplier: e.target.value })} onBlur={() => commitRows()} />
+                              <Input value={row.supplier} onChange={(e) => updateRow(i, { supplier: e.target.value })} />
                             </td>
                             <td className="py-1.5 text-center">
                               <button onClick={() => removeRow(i)} aria-label="Remove row" className="text-slate-400 hover:text-red-600">
@@ -779,7 +796,13 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                 </table>
               </div>
               <div className="mt-3">
-                <Button variant="secondary" onClick={() => setRows((prev) => [...prev, emptyRow()])}>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setRows((prev) => [...prev, emptyRow()]);
+                    setRowsDirty(true);
+                  }}
+                >
                   + Add row
                 </Button>
               </div>
