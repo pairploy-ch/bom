@@ -62,6 +62,23 @@ def _coerce_bytea(row: dict[str, Any] | None, *columns: str) -> dict[str, Any] |
     return row
 
 
+def _lock_house(conn: psycopg.Connection, house_id: str) -> None:
+    """
+    Serializes the "delete all rows for this house, then bulk-reinsert"
+    functions below against each other. Without this, two overlapping calls
+    for the same house (e.g. rapid-fire auto-save from two fields' onBlur
+    landing close together) can interleave under READ COMMITTED: both
+    DELETEs see the same pre-existing rows, both INSERTs then succeed, and
+    the table ends up with two full copies instead of one — silent row
+    duplication, not an error. pg_advisory_xact_lock blocks a second caller
+    for the same house_id until the first one's transaction commits, and
+    releases automatically at commit/rollback (matches get_conn()'s
+    per-call connection/transaction lifetime). hashtext() collisions across
+    different house_ids only cost extra waiting, never incorrect results.
+    """
+    conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (house_id,))
+
+
 @contextlib.contextmanager
 def get_conn() -> Iterator[psycopg.Connection]:
     # prepare_threshold=None disables psycopg3's automatic server-side
@@ -478,6 +495,7 @@ def update_quotation_details(house_id: str, details: dict[str, Any]) -> None:
 
 def replace_furniture_items(house_id: str, items: list[dict[str, Any]]) -> None:
     with get_conn() as conn:
+        _lock_house(conn, house_id)
         conn.execute("DELETE FROM furniture_items WHERE house_id = %s", (house_id,))
         conn.cursor().executemany(
             """
@@ -523,6 +541,7 @@ def get_furniture_items(house_id: str) -> list[dict[str, Any]]:
 
 def replace_mapping_rows(house_id: str, rows: list[dict[str, Any]]) -> None:
     with get_conn() as conn:
+        _lock_house(conn, house_id)
         conn.execute("DELETE FROM mapping_rows WHERE house_id = %s", (house_id,))
         conn.cursor().executemany(
             """
@@ -592,6 +611,7 @@ def get_quotation_texts(house_id: str) -> dict[str, str]:
 def save_quotation_pdfs(house_id: str, bucket: str, files: list[tuple[str, bytes]]) -> None:
     """Replaces all previously-stored PDFs for this one bucket."""
     with get_conn() as conn:
+        _lock_house(conn, house_id)
         conn.execute(
             "DELETE FROM quotation_pdfs WHERE house_id = %s AND bucket_label = %s",
             (house_id, bucket),
@@ -627,6 +647,7 @@ def replace_contract_attachments(house_id: str, items: list[dict[str, Any]]) -> 
     item_range, reference_note}, in the display order they should appear in
     the final contract PDF."""
     with get_conn() as conn:
+        _lock_house(conn, house_id)
         conn.execute("DELETE FROM contract_attachments WHERE house_id = %s", (house_id,))
         conn.cursor().executemany(
             """
