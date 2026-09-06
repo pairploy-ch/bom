@@ -851,7 +851,7 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                 )}
                 <ExcelStylePreview rows={preview.data.rows} />
                 <p className="text-sm text-slate-600">
-                  ยอดรวมค่าเฟอร์นิเจอร์ (10DK Price + งานจัดซื้อเบิกจ่ายตามราคาจริง) × จำนวน:{" "}
+                  ยอดรวมค่าเฟอร์นิเจอร์ (10DK Price + งานจัดซื้อเบิกจ่ายตามราคาจริง):{" "}
                   <strong className="tabular-nums">{grandTotal.toLocaleString("en-US", { maximumFractionDigits: 0 })} บาท</strong>
                 </p>
 

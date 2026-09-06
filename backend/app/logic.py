@@ -39,6 +39,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Mm, Pt, RGBColor
 from openai import APIError, APITimeoutError, OpenAI, RateLimitError
+from openpyxl.comments import Comment
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.exceptions import InvalidFileException
@@ -543,7 +544,7 @@ def write_mapping_to_excel(
             for row in grouped[room]:
                 order_type = row.get("order_type", "จัดซื้อ (ราคาจริง ไม่บวกกำไร)")
                 unit_price = row.get("unit_price", 0) or 0
-                unit_price, _adj_note = apply_known_price_adjustments(row.get("item_name", ""), unit_price)
+                unit_price, adj_note = apply_known_price_adjustments(row.get("item_name", ""), unit_price)
 
                 item_text = row.get("item_name", "")
                 spec = str(row.get("spec") or "").strip()
@@ -619,6 +620,15 @@ def write_mapping_to_excel(
                         r = current_row
                         ws.cell(row=r, column=r_idx).value = f"={col_map.purchased_price_col}{r}"
                         ws.cell(row=r, column=r_idx).number_format = MONEY_FORMAT
+
+                # Auto price-adjustment note (e.g. pendant lamp remote/install
+                # surcharge) — shown in the Step 3 preview's "หมายเหตุ" column but
+                # previously dropped on export. Attached as a cell comment (not
+                # the cell's value) on column N so it never overwrites that
+                # column's own purchase-compare formula above for จัดซื้อ rows.
+                if adj_note:
+                    note_cell = ws.cell(row=current_row, column=r_idx)
+                    note_cell.comment = Comment(adj_note, "ระบบ")
 
                 current_row += 1
                 item_no += 1
@@ -786,7 +796,11 @@ def compute_price_preview(
             out.update({"k_other": k, "l_chosen": l, "m_10dk_price": m})
         else:
             out.update({"n_actual_price": unit_price})
-        out["line_total"] = (out.get("m_10dk_price") or out.get("n_actual_price") or 0) * qty
+        # M (10DK Price) and N (จัดซื้อ actual price) are already lot totals for
+        # this line, not per-unit — do NOT multiply by qty (matches every other
+        # total in the app: _quotation_row_totals, main.py's _quotation_totals,
+        # QuotationPreview.tsx's quotationTotals — all sum these as-is).
+        out["line_total"] = out.get("m_10dk_price") or out.get("n_actual_price") or 0
         preview.append(out)
 
     warnings: list[str] = []
