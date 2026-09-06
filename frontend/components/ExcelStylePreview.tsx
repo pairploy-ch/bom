@@ -86,14 +86,14 @@ export function ExcelStylePreview({ rows }: { rows: PreviewRow[] }) {
                 <td className="border border-slate-300 px-2 py-1.5 text-right">{itemNo}</td>
                 <td className="border border-slate-300 px-2 py-1.5 text-left">{displayItemName(r.item_name)}</td>
                 <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.quantity)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.g_cost, 2)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.h_loading, 2)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.i_plus_vat, 2)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.j_pmay, 2)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.k_other, 2)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.l_chosen, 2)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.m_10dk_price, 0)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.n_actual_price, 2)}</td>
+                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.g_cost)}</td>
+                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.h_loading)}</td>
+                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.i_plus_vat)}</td>
+                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.j_pmay)}</td>
+                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.k_other)}</td>
+                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.l_chosen)}</td>
+                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.m_10dk_price)}</td>
+                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.n_actual_price)}</td>
                 <td className="border border-slate-300 px-2 py-1.5 text-left text-slate-500">{r.auto_note}</td>
               </tr>
             </Fragment>

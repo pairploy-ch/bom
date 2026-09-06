@@ -92,8 +92,28 @@ export function CardHeader({
 // Unlike Button, HeroUI's Input wraps a real native <input> and forwards
 // standard DOM attributes/events directly — type="number", the existing
 // onChange={(e) => e.target.value} pattern, and disabled all just work.
-export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
-  return <HeroInput fullWidth {...props} className={cn(props.className)} />;
+//
+// Every type="number" input here hides its native up/down spinner buttons
+// and ignores mouse-wheel scroll while focused — both are silent ways to
+// change a price without the user noticing (a stray click on the tiny
+// arrows, or scrolling the page while the cursor happens to be over a
+// focused price field), which is exactly what was corrupting entered
+// prices. The [&::-webkit-*] rules are inert on non-number inputs.
+export function Input({ className, onWheel, ...props }: InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <HeroInput
+      fullWidth
+      {...props}
+      onWheel={(e) => {
+        if (props.type === "number") e.currentTarget.blur();
+        onWheel?.(e);
+      }}
+      className={cn(
+        "[appearance:textfield] [&::-webkit-inner-spin-button]:m-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:m-0 [&::-webkit-outer-spin-button]:appearance-none",
+        className
+      )}
+    />
+  );
 }
 
 export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
