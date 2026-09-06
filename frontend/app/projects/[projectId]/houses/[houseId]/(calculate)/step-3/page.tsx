@@ -661,7 +661,7 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                       <th className="w-24 py-2 pr-2">ALT</th>
                       <th className="w-24 py-2 pr-2">P&apos;May</th>
                       <th className="w-24 py-2 pr-2">Other</th>
-                      <th className="w-24 py-2 pr-2">Unit Price</th>
+                      <th className="w-24 py-2 pr-2">Unit Price (จัดซื้อ)</th>
                       <th className="w-28 py-2 pr-2">Supplier</th>
                       <th className="w-10 py-2" />
                     </tr>
