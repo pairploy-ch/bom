@@ -105,6 +105,10 @@ PENDANT_LAMP_KEYWORDS = ["โคมไฟห้อยเพดาน", "pendant 
 ROOM_HEADER_FILL = PatternFill(start_color="FF000000", end_color="FF000000", fill_type="solid")
 ROOM_HEADER_FONT = Font(color="FFFFFFFF", bold=True)
 
+# Whole-baht display for every price/formula cell write_mapping_to_excel writes —
+# the underlying value/formula keeps full precision, this only hides the decimals.
+MONEY_FORMAT = "#,##0"
+
 
 @dataclass
 class ColumnMapping:
@@ -567,17 +571,25 @@ def write_mapping_to_excel(
 
                     if alt_price > 0:
                         ws.cell(row=r, column=custom_price_idx).value = alt_price
+                        ws.cell(row=r, column=custom_price_idx).number_format = MONEY_FORMAT
                         if col_map.generate_formulas:
                             ws.cell(row=r, column=h_idx).value = f"={col_map.custom_made_price_col}{r}*{col_map.formula_h_col}${anchor}"
+                            ws.cell(row=r, column=h_idx).number_format = MONEY_FORMAT
                             ws.cell(row=r, column=i_idx).value = f"={col_map.formula_h_col}{r}*{col_map.formula_i_col}${anchor}"
+                            ws.cell(row=r, column=i_idx).number_format = MONEY_FORMAT
                     if pmay_price > 0:
                         ws.cell(row=r, column=j_idx).value = f"=({pmay_price}*{col_map.formula_i_col}${anchor})"
+                        ws.cell(row=r, column=j_idx).number_format = MONEY_FORMAT
                     if other_maker_price > 0:
                         ws.cell(row=r, column=k_idx).value = f"=({other_maker_price}*{col_map.formula_i_col}${anchor})"
+                        ws.cell(row=r, column=k_idx).number_format = MONEY_FORMAT
                     if col_map.generate_formulas and (alt_price > 0 or pmay_price > 0 or other_maker_price > 0):
                         ws.cell(row=r, column=l_idx).value = f"=MAX({col_map.formula_i_col}{r}:{k_col}{r})"
+                        ws.cell(row=r, column=l_idx).number_format = MONEY_FORMAT
                         ws.cell(row=r, column=m_idx).value = f"=ROUNDUP({col_map.formula_l_col}{r}*{col_map.formula_m_col}${anchor},-3)"
+                        ws.cell(row=r, column=m_idx).number_format = MONEY_FORMAT
                         ws.cell(row=r, column=q_idx).value = f"={col_map.formula_m_col}{r}"
+                        ws.cell(row=r, column=q_idx).number_format = MONEY_FORMAT
 
                 elif order_type == "จัดซื้อ (บวกกำไร 10DK)":
                     supplier = row.get("supplier", "")
@@ -586,20 +598,27 @@ def write_mapping_to_excel(
                     if col_map.generate_formulas:
                         r = current_row
                         ws.cell(row=r, column=k_idx).value = f"=({unit_price}*{col_map.formula_i_col}${anchor})"
+                        ws.cell(row=r, column=k_idx).number_format = MONEY_FORMAT
                         ws.cell(row=r, column=l_idx).value = f"=MAX({col_map.formula_i_col}{r}:{k_col}{r})"
+                        ws.cell(row=r, column=l_idx).number_format = MONEY_FORMAT
                         ws.cell(row=r, column=m_idx).value = f"=ROUNDUP({col_map.formula_l_col}{r}*{col_map.formula_m_col}${anchor},-3)"
+                        ws.cell(row=r, column=m_idx).number_format = MONEY_FORMAT
                         ws.cell(row=r, column=q_idx).value = f"={col_map.formula_m_col}{r}"
+                        ws.cell(row=r, column=q_idx).number_format = MONEY_FORMAT
                     else:
                         ws.cell(row=current_row, column=k_idx).value = unit_price
+                        ws.cell(row=current_row, column=k_idx).number_format = MONEY_FORMAT
 
                 else:  # "จัดซื้อ (ราคาจริง ไม่บวกกำไร)"
                     supplier = row.get("supplier", "")
                     if supplier:
                         ws.cell(row=current_row, column=supplier_idx).value = supplier
                     ws.cell(row=current_row, column=purchased_price_idx).value = unit_price
+                    ws.cell(row=current_row, column=purchased_price_idx).number_format = MONEY_FORMAT
                     if col_map.generate_formulas:
                         r = current_row
                         ws.cell(row=r, column=r_idx).value = f"={col_map.purchased_price_col}{r}"
+                        ws.cell(row=r, column=r_idx).number_format = MONEY_FORMAT
 
                 current_row += 1
                 item_no += 1
