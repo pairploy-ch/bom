@@ -2531,6 +2531,16 @@ beyond its name and price — material, construction, or finish notes (e.g. "โ
 "quotation_spec" for that item. This is genuinely optional — most quotation lines are just a name \
 and a price with nothing else to extract, so leave "quotation_spec" out entirely (do not invent \
 detail that isn't in the text, and do not repeat the item's own name/spec back).
+- IMPORTANT — stone/granite top add-ons: some numbered line items (e.g. a TV console, kitchen \
+counter, or sideboard) list TWO separate priced components under the SAME item number: the base \
+furniture piece, and a "Top หิน..." / "Top หินจริง..." (stone/granite top) line quoted \
+separately, usually phrased like "Top หินจริง (ราคาไม่เกิน 6,900.-/ตร.ม) พร้อมติดตั้ง" — \
+sometimes with its own note like "(รวมค่าตัด เจียรขอบ และติดตั้ง)". These two lines belong to \
+ONE furniture item, not two — ADD the stone top's price to the base item's price and report a \
+SINGLE combined unit_price. For example, if item #2 "TV CONSOLE" shows a base price of 36,000 \
+and is followed by "Top หินจริง...พร้อมติดตั้ง" at 28,000, report unit_price as 64,000 (36,000 + \
+28,000) for that one item — do NOT create a separate matched item just for the stone top line, \
+and do NOT report only the base price while dropping the stone top's price.
 - ALWAYS include the original "index" field (copied exactly from the input item) in every \
 output row, so results can be merged back to the correct item afterward.{alt_info_clause}
 
