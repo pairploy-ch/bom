@@ -545,13 +545,12 @@ def write_mapping_to_excel(
                 unit_price = row.get("unit_price", 0) or 0
                 unit_price, adj_note = apply_known_price_adjustments(row.get("item_name", ""), unit_price)
 
-                item_text = row.get("item_name", "")
-                spec = str(row.get("spec") or "").strip()
-                if spec:
-                    item_text = f"{item_text} ({spec})"
-                suffix = ORDER_TYPE_SUFFIX.get(order_type)
-                if suffix:
-                    item_text = f"{item_text} - {suffix}"
+                item_text = build_item_display_text(
+                    row.get("item_name", ""),
+                    str(row.get("quotation_spec") or ""),
+                    str(row.get("spec") or ""),
+                    order_type,
+                )
 
                 ws.cell(row=current_row, column=room_idx).value = item_no
                 ws.cell(row=current_row, column=item_idx).value = item_text
@@ -745,12 +744,12 @@ def compute_price_preview(
         raw_unit_price = float(row.get("unit_price", 0) or 0)
         unit_price, adj_note = apply_known_price_adjustments(row.get("item_name", ""), raw_unit_price)
         qty = float(row.get("quantity", 0) or 0)
-        item_name = row.get("item_name", "")
-        spec = str(row.get("spec") or "").strip()
-        display_name = f"{item_name} ({spec})" if spec else item_name
-        suffix = ORDER_TYPE_SUFFIX.get(order_type)
-        if suffix:
-            display_name = f"{display_name} - {suffix}"
+        display_name = build_item_display_text(
+            row.get("item_name", ""),
+            str(row.get("quotation_spec") or ""),
+            str(row.get("spec") or ""),
+            order_type,
+        )
         out: dict[str, Any] = {
             "room": row.get("room", ""),
             "item_name": display_name,
@@ -2414,6 +2413,31 @@ ORDER_TYPE_SUFFIX = {
 }
 
 
+def build_item_display_text(
+    item_name: str, quotation_spec: str, spec: str, order_type: str
+) -> str:
+    """
+    Builds the single combined string shown in the "Furniture List" column of
+    both the Excel export (write_mapping_to_excel) and the on-screen preview
+    (compute_price_preview) — kept as one shared function so the two stay in
+    sync. Pattern: "{name} สเปค {quotation_spec} ขนาด {spec} - {order type
+    suffix}", each labeled segment only included when that field has content.
+    quotation_spec is the AI-extracted detail from the supplier's quotation
+    PDF (e.g. material/construction notes); spec is ขนาด (size), from Step 2.
+    """
+    text = item_name
+    quotation_spec = quotation_spec.strip()
+    if quotation_spec:
+        text = f"{text} สเปค {quotation_spec}"
+    spec = spec.strip()
+    if spec:
+        text = f"{text} ขนาด {spec}"
+    suffix = ORDER_TYPE_SUFFIX.get(order_type)
+    if suffix:
+        text = f"{text} - {suffix}"
+    return text
+
+
 def build_price_matching_system_prompt(fixed_supplier: str | None) -> str:
     """Builds the Step-3 matching prompt for one upload bucket — see app.py for the full rationale."""
     if fixed_supplier:
@@ -2501,13 +2525,20 @@ valid price.
 "mapped_items" entirely — do not include a zero-price guess. This batch may just not contain \
 that item; it might be matched in a different batch instead.
 - Never fabricate a price that is not present in the text.
+- Also check the matched line in the quotation text for any descriptive detail about the item \
+beyond its name and price — material, construction, or finish notes (e.g. "โครงไม้จริง กรุไม้อัด \
+ปิดวีเนียร์", "ซ่อนไฟ LED Strip Light ความยาวไม่เกิน 16 m."). If present, copy that text into \
+"quotation_spec" for that item. This is genuinely optional — most quotation lines are just a name \
+and a price with nothing else to extract, so leave "quotation_spec" out entirely (do not invent \
+detail that isn't in the text, and do not repeat the item's own name/spec back).
 - ALWAYS include the original "index" field (copied exactly from the input item) in every \
 output row, so results can be merged back to the correct item afterward.{alt_info_clause}
 
 Respond ONLY with a JSON object of this exact shape (no extra commentary):
 {{
   "mapped_items": [
-    {{"index": 0, "unit_price": 350.00, "supplier": "ABC Furniture Co."}}
+    {{"index": 0, "unit_price": 350.00, "supplier": "ABC Furniture Co.", \
+"quotation_spec": "โครงไม้จริง กรุไม้อัดปิดวีเนียร์(ราคาไม่เกิน 1500.-/แผ่น)"}}
   ]
 }}
 """
@@ -2570,6 +2601,7 @@ def merge_bucket_results(
             "supplier": "",
             "order_type": "จัดซื้อ (ราคาจริง ไม่บวกกำไร)",
             "spec": item.get("spec", ""),
+            "quotation_spec": "",
         })
 
     autocorrected_total = 0
@@ -2588,6 +2620,10 @@ def merge_bucket_results(
 
             entry = final_mapping[idx]
             autocorrected = bool(row.get("_price_autocorrect_note"))
+
+            quotation_spec = str(row.get("quotation_spec") or "").strip()
+            if quotation_spec:
+                entry["quotation_spec"] = quotation_spec
 
             if bucket_label == "ALT":
                 entry["alt_price"] = price

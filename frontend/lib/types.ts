@@ -73,6 +73,7 @@ export interface MappingRow {
   supplier: string;
   order_type: OrderType;
   spec: string;
+  quotation_spec: string;
   suspicious?: boolean;
 }
 

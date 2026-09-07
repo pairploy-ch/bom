@@ -45,6 +45,7 @@ const emptyRow = (): MappingRow => ({
   supplier: "",
   order_type: "จัดซื้อ (ราคาจริง ไม่บวกกำไร)",
   spec: "",
+  quotation_spec: "",
 });
 
 function formatDateTime(iso: string): string {
@@ -650,11 +651,12 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                 </div>
               )}
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[1250px] border-collapse text-sm">
+                <table className="w-full min-w-[1450px] border-collapse text-sm">
                   <thead>
                     <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
                       <th className="py-2 pr-2">Room</th>
                       <th className="py-2 pr-2">Item Name</th>
+                      <th className="py-2 pr-2">ขนาด</th>
                       <th className="py-2 pr-2">Spec</th>
                       <th className="w-20 py-2 pr-2">Qty</th>
                       <th className="w-48 py-2 pr-2">ประเภท</th>
@@ -670,7 +672,7 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                     {mappingGroups.map((group) => (
                       <Fragment key={group.room || "__empty__"}>
                         <tr className="bg-slate-900 text-white">
-                          <td className="px-2 py-1.5" colSpan={11}>
+                          <td className="px-2 py-1.5" colSpan={12}>
                             {group.room || UNSPECIFIED_LABEL}{" "}
                             <span className="font-normal text-slate-300">({group.entries.length} รายการ)</span>
                           </td>
@@ -730,6 +732,13 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                                 value={row.spec}
                                 placeholder="เช่น 180x200cm, ไม้วีเนียร์"
                                 onChange={(e) => updateRow(i, { spec: e.target.value })}
+                              />
+                            </td>
+                            <td className="py-1.5 pr-2">
+                              <Input
+                                value={row.quotation_spec}
+                                placeholder="รายละเอียดจากใบเสนอราคา (AI ดึงให้อัตโนมัติ, แก้ไขได้)"
+                                onChange={(e) => updateRow(i, { quotation_spec: e.target.value })}
                               />
                             </td>
                             <td className="py-1.5 pr-2">

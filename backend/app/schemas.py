@@ -57,6 +57,11 @@ class MappingRow(BaseModel):
     supplier: str = ""
     order_type: OrderType = "จัดซื้อ (ราคาจริง ไม่บวกกำไร)"
     spec: str = ""
+    # Extra descriptive text the AI found in the supplier's quotation PDF for
+    # this matched item, beyond just its name (e.g. material/construction
+    # notes) — distinct from `spec` (ขนาด/size), which comes from Step 2's
+    # furniture list instead. Editable, auto-filled by match_prices_bucket.
+    quotation_spec: str = ""
     # Response-only — recomputed server-side on every read (SUSPICIOUS_PRICE_THRESHOLD
     # rule from the original app), ignored if sent by the client.
     suspicious: bool = False

@@ -179,6 +179,9 @@ def init_db() -> None:
                 spec TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_mapping_house ON mapping_rows(house_id, position);
+            -- Extra descriptive text AI found in the supplier's quotation PDF
+            -- beyond the item name — distinct from `spec` (ขนาด, from Step 2).
+            ALTER TABLE mapping_rows ADD COLUMN IF NOT EXISTS quotation_spec TEXT NOT NULL DEFAULT '';
 
             CREATE TABLE IF NOT EXISTS quotation_texts (
                 house_id TEXT NOT NULL REFERENCES houses(id) ON DELETE CASCADE,
@@ -547,8 +550,8 @@ def replace_mapping_rows(house_id: str, rows: list[dict[str, Any]]) -> None:
             """
             INSERT INTO mapping_rows
                 (house_id, position, room, item_name, quantity, unit_price,
-                 alt_price, pmay_price, other_maker_price, supplier, order_type, spec)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 alt_price, pmay_price, other_maker_price, supplier, order_type, spec, quotation_spec)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             [
                 (
@@ -564,6 +567,7 @@ def replace_mapping_rows(house_id: str, rows: list[dict[str, Any]]) -> None:
                     str(row.get("supplier") or ""),
                     str(row.get("order_type") or DEFAULT_ORDER_TYPE),
                     str(row.get("spec") or ""),
+                    str(row.get("quotation_spec") or ""),
                 )
                 for i, row in enumerate(rows)
             ],
@@ -576,7 +580,7 @@ def get_mapping_rows(house_id: str) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT room, item_name, quantity, unit_price, alt_price, pmay_price,
-                   other_maker_price, supplier, order_type, spec
+                   other_maker_price, supplier, order_type, spec, quotation_spec
             FROM mapping_rows WHERE house_id = %s ORDER BY position
             """,
             (house_id,),
