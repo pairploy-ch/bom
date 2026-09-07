@@ -237,6 +237,8 @@ def call_claude_json(
     input_schema: dict[str, Any],
     model: str | None = None,
     max_tokens: int = 4096,
+    timeout: float | None = None,
+    max_retries: int | None = None,
 ) -> dict[str, Any]:
     """
     Claude has no OpenAI-style response_format={'type':'json_object'} mode, so
@@ -246,8 +248,16 @@ def call_claude_json(
     Raises LogicError on any failure, mirroring call_openai_json. `model`
     defaults to config.ANTHROPIC_MODEL if not given, so callers that need a
     different model for one call site (e.g. price matching) don't have to
-    change the app-wide default.
+    change the app-wide default. `timeout`/`max_retries` similarly override
+    the client's own config.AI_TIMEOUT_SECONDS default for one call — needed
+    for Opus-tier models, which think before answering by default and can
+    genuinely take longer than the 60s tuned for older, non-thinking models.
     """
+    if timeout is not None or max_retries is not None:
+        client = client.with_options(
+            timeout=timeout if timeout is not None else config.AI_TIMEOUT_SECONDS,
+            max_retries=max_retries if max_retries is not None else config.AI_MAX_RETRIES,
+        )
     try:
         response = client.messages.create(
             model=model or config.ANTHROPIC_MODEL,
@@ -2653,6 +2663,14 @@ def match_prices_bucket(
         input_schema=_PRICE_MATCH_INPUT_SCHEMA,
         model="claude-opus-5",
         max_tokens=8192,
+        # Opus 5 thinks before answering by default, and this request carries
+        # the full furniture list (often 100+ items) plus the whole supplier
+        # PDF's text — routinely takes longer than the 60s tuned for the
+        # non-thinking model this replaced. One retry, not the default two,
+        # since up to 4 buckets run sequentially per house and a slow-but-
+        # correct request rarely gets faster on retry.
+        timeout=180,
+        max_retries=1,
     )
     mapped = result.get("mapped_items")
     if not isinstance(mapped, list):
