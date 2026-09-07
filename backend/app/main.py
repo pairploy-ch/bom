@@ -489,9 +489,9 @@ async def match_prices(
     if not furniture_list:
         raise HTTPException(400, "Complete Step 2 (extract the furniture list) first.")
 
-    client = get_openai_client()
+    client = get_anthropic_client()
     if client is None:
-        raise HTTPException(503, "OPENAI_API_KEY is not configured on the server.")
+        raise HTTPException(503, "ANTHROPIC_API_KEY is not configured on the server.")
 
     # Only items still checked ("verified") in Step 2 are carried into Step 3 —
     # unchecking an item is how the user says "I don't want this one," so it's

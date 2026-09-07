@@ -235,18 +235,23 @@ def call_claude_json(
     tool_name: str,
     tool_description: str,
     input_schema: dict[str, Any],
+    model: str | None = None,
+    max_tokens: int = 4096,
 ) -> dict[str, Any]:
     """
     Claude has no OpenAI-style response_format={'type':'json_object'} mode, so
     this uses a single forced tool call instead — Claude must call `tool_name`
     with arguments matching `input_schema`, which is a more reliable way to
     get back exactly-shaped JSON than asking it to emit a raw JSON text block.
-    Raises LogicError on any failure, mirroring call_openai_json.
+    Raises LogicError on any failure, mirroring call_openai_json. `model`
+    defaults to config.ANTHROPIC_MODEL if not given, so callers that need a
+    different model for one call site (e.g. price matching) don't have to
+    change the app-wide default.
     """
     try:
         response = client.messages.create(
-            model=config.ANTHROPIC_MODEL,
-            max_tokens=4096,
+            model=model or config.ANTHROPIC_MODEL,
+            max_tokens=max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
             tools=[{"name": tool_name, "description": tool_description, "input_schema": input_schema}],
@@ -2554,8 +2559,43 @@ Respond ONLY with a JSON object of this exact shape (no extra commentary):
 """
 
 
+# Forced tool-call schema for match_prices_bucket's Claude request — see
+# call_claude_json's docstring for why a tool call is used instead of a raw
+# JSON response mode (Claude has none).
+_PRICE_MATCH_INPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "mapped_items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "description": "Original index from the input furniture list."},
+                    "unit_price": {"type": "number"},
+                    "supplier": {"type": "string"},
+                    "quotation_spec": {
+                        "type": "string",
+                        "description": "Extra descriptive detail found for this item, if any — see instructions.",
+                    },
+                },
+                "required": ["index", "unit_price"],
+            },
+        },
+        "alt_batch_info": {
+            "type": "object",
+            "properties": {
+                "sum_of_item_costs": {"type": "number"},
+                "protection_fee": {"type": "number"},
+                "management_fee": {"type": "number"},
+            },
+        },
+    },
+    "required": ["mapped_items"],
+}
+
+
 def match_prices_bucket(
-    client: OpenAI,
+    client: Anthropic,
     indexed_furniture_list: list[dict[str, Any]],
     supplier_text: str,
     fixed_supplier: str | None,
@@ -2564,6 +2604,11 @@ def match_prices_bucket(
     Runs price matching for ONE upload bucket. Returns (mapped_items,
     alt_batch_info) — alt_batch_info is only ever populated when
     fixed_supplier == "ALT". Raises LogicError if the AI response is malformed.
+
+    Uses Claude Opus 5 (not the app-wide ANTHROPIC_MODEL default, which stays
+    on Sonnet for furniture-list extraction) — this step follows several
+    layered, nuanced rules at once (pre-discount pricing, room/zone matching,
+    stone-top merging) that benefit from the stronger model.
     """
     system_prompt = build_price_matching_system_prompt(fixed_supplier)
     normalized_text = normalize_thousands_commas(supplier_text)
@@ -2572,7 +2617,16 @@ def match_prices_bucket(
         f"{json.dumps(indexed_furniture_list, ensure_ascii=False)}\n\n"
         f"Supplier quotation text for this batch:\n{normalized_text}"
     )
-    result = call_openai_json(client, system_prompt, user_prompt)
+    result = call_claude_json(
+        client,
+        system_prompt,
+        user_prompt,
+        tool_name="report_price_matches",
+        tool_description="Reports the price-matching results for the furniture list against this supplier quotation batch.",
+        input_schema=_PRICE_MATCH_INPUT_SCHEMA,
+        model="claude-opus-5",
+        max_tokens=8192,
+    )
     mapped = result.get("mapped_items")
     if not isinstance(mapped, list):
         raise LogicError("⚠️ The AI response did not contain a valid 'mapped_items' list.")
