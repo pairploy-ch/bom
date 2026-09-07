@@ -2470,6 +2470,27 @@ def build_price_matching_system_prompt(fixed_supplier: str | None) -> str:
             "row (e.g. unit price × quantity breakdowns) — จำนวนเงิน is always the correct one to use."
         )
 
+    # Other-maker and Purchase quotations often show per-unit price + a discount
+    # column + a post-discount "ราคารวม" total — ALT's price_column_clause above
+    # already handles ALT's own fixed จำนวนเงิน-column format correctly, and
+    # per instruction this rule is scoped to Other/Purchase only (not P'May).
+    discount_price_clause = ""
+    if fixed_supplier in ("Other", None):
+        discount_price_clause = (
+            "\n- IMPORTANT — pricing before discount, multiplied by quantity: this batch's "
+            "quotations often show a table with a per-unit price column, a discount column "
+            '(percentage and/or amount), and a final "ราคารวม" (total) column that already has '
+            "the discount subtracted. Extract the PRE-discount per-unit price and multiply it by "
+            "the quantity shown in THAT quotation line (not the furniture list's own quantity) — "
+            'report that product as "unit_price". NEVER use the post-discount "ราคารวม" column, '
+            "and never report just the bare per-unit price without multiplying by the quotation's "
+            "own quantity — this app does not multiply unit_price by quantity again downstream, "
+            "so unit_price must already be the full pre-discount total for the quantity quoted. "
+            "Example: quotation shows quantity 2 and per-unit price 8,500 -> report unit_price "
+            "as 17,000 (8,500 × 2), not 8,500 and not whatever the post-discount ราคารวม column "
+            "shows."
+        )
+
     alt_info_clause = ""
     if fixed_supplier == "ALT":
         alt_info_clause = (
@@ -2514,6 +2535,12 @@ text (e.g., "King Size Bed" may match a line like "6-foot wooden bed frame" or "
 King - Solid Oak"). When an item's "spec" is present, use it too — it's especially useful for \
 telling apart multiple similar items in the same quote that only differ by size or material \
 (e.g. two sofas that differ only in fabric, or two tables that differ only in dimensions).
+- Room/zone hints: the quotation text sometimes explicitly states which room/zone an item is \
+for, often in parentheses right after the item's description — e.g. "(โซน Son's bedroom - 4th \
+Floor)" or similar. Each furniture list item already has its own "room" field — treat a \
+matching room/zone hint in the quotation text as strong confirmation you've matched the right \
+item, especially when disambiguating between multiple visually similar items (e.g. two \
+different chairs quoted for different rooms).
 - Extract the correct unit price (a number, no currency symbols) for each matched item from \
 the text.
 - CRITICAL — number formatting: Thai and English business documents commonly write prices \
@@ -2522,7 +2549,7 @@ with a comma (,) as the THOUSANDS separator and a period (.) as the decimal sepa
 drop digits from a price. Always read the FULL number including every digit before AND after \
 any comma. Double-check each extracted price against the source text before including it in \
 your answer — a price under 100 for furniture items is almost always a sign you mis-read the \
-number; re-check the source text in that case.{price_column_clause}
+number; re-check the source text in that case.{price_column_clause}{discount_price_clause}
 {supplier_clause}
 - If the same item could be matched more than once within this batch, choose the lowest \
 valid price.
