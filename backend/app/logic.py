@@ -39,7 +39,6 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Mm, Pt, RGBColor
 from openai import APIError, APITimeoutError, OpenAI, RateLimitError
-from openpyxl.comments import Comment
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.exceptions import InvalidFileException
@@ -623,12 +622,12 @@ def write_mapping_to_excel(
 
                 # Auto price-adjustment note (e.g. pendant lamp remote/install
                 # surcharge) — shown in the Step 3 preview's "หมายเหตุ" column but
-                # previously dropped on export. Attached as a cell comment (not
-                # the cell's value) on column N so it never overwrites that
-                # column's own purchase-compare formula above for จัดซื้อ rows.
+                # previously dropped on export. Column N is the designated
+                # remark column, so write it straight into the cell's value —
+                # overwrites that column's purchase-compare formula above for
+                # จัดซื้อ rows when there's a note (per explicit instruction).
                 if adj_note:
-                    note_cell = ws.cell(row=current_row, column=r_idx)
-                    note_cell.comment = Comment(adj_note, "ระบบ")
+                    ws.cell(row=current_row, column=r_idx).value = adj_note
 
                 current_row += 1
                 item_no += 1
