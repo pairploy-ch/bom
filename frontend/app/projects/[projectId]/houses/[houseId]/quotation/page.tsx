@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Eye, FileEdit, FileText, FolderOpen, NotebookPen, Save, Upload } from "lucide-react";
+import { Building2, Eye, FileEdit, FileText, FolderOpen, NotebookPen, Save, Trash2, Upload } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
@@ -76,6 +76,12 @@ export default function QuotationPage() {
   const [excelFile, setExcelFile] = useState<File | null>(null);
   const [excelSheetNames, setExcelSheetNames] = useState<string[]>([]);
   const [excelSheetName, setExcelSheetName] = useState("");
+  // Bumped on every successful upload so re-uploading a *different* file
+  // that happens to share the old one's name+sheet (e.g. re-exporting after
+  // fixing a value, same filename) still busts the query cache below —
+  // filename+sheet alone isn't a reliable cache key since neither changes
+  // when only the file's content is edited and re-saved.
+  const [excelUploadToken, setExcelUploadToken] = useState(0);
 
   const inspectExcel = useMutation({
     mutationFn: (file: File) => api.inspectQuotationExcel(file),
@@ -83,12 +89,13 @@ export default function QuotationPage() {
       setExcelFile(file);
       setExcelSheetNames(res.sheet_names);
       setExcelSheetName(res.sheet_names[0] || "");
+      setExcelUploadToken((t) => t + 1);
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to read the Excel file."),
   });
 
   const excelPreview = useQuery<QuotationPreviewData>({
-    queryKey: ["quotation-preview-excel", excelFile?.name, excelSheetName],
+    queryKey: ["quotation-preview-excel", excelUploadToken, excelSheetName],
     queryFn: () => api.previewQuotationFromExcel(excelFile as File, excelSheetName),
     enabled: mode === "excel" && !!excelFile && !!excelSheetName,
   });
@@ -96,6 +103,17 @@ export default function QuotationPage() {
   const handleExcelFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) inspectExcel.mutate(file);
+    // Reset so picking the exact same file again still fires onChange —
+    // otherwise a re-upload of an edited-but-same-named file can silently
+    // no-op in some browsers.
+    e.target.value = "";
+  };
+
+  const clearExcelFile = () => {
+    setExcelFile(null);
+    setExcelSheetNames([]);
+    setExcelSheetName("");
+    if (fileInput.current) fileInput.current.value = "";
   };
 
   const preview = mode === "house" ? housePreview : excelPreview;
@@ -334,8 +352,15 @@ export default function QuotationPage() {
                 )}
               </label>
               {excelFile && (
-                <p className="text-sm text-slate-600">
+                <p className="flex items-center gap-2 text-sm text-slate-600">
                   ไฟล์: <strong>{excelFile.name}</strong>
+                  <button
+                    type="button"
+                    onClick={clearExcelFile}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-red-600 hover:text-red-700"
+                  >
+                    <Trash2 size={13} /> ลบไฟล์
+                  </button>
                 </p>
               )}
               {excelSheetNames.length > 0 && (
