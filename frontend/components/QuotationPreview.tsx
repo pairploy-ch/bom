@@ -124,6 +124,7 @@ export function QuotationPreviewTable({
   grandTotal,
   grandTotalNote,
   remarks,
+  hasFixedLabels,
 }: {
   rows: QuotationRow[];
   onRowChange: (index: number, patch: Partial<QuotationRow>) => void;
@@ -135,8 +136,14 @@ export function QuotationPreviewTable({
   grandTotal: number;
   grandTotalNote: string;
   remarks: string;
+  // True for rows uploaded from an already-exported Excel file, where each
+  // row's `label` is the item's own running number from the source file's
+  // room/item-no column — reuse it as-is instead of recomputing a
+  // numeric/lettered sequence (which would renumber e.g. row 7/8 in a
+  // "จัดซื้อ" band to "A"/"B", disagreeing with the file).
+  hasFixedLabels?: boolean;
 }) {
-  const labels = assignQuotationLabels(rows);
+  const labels = hasFixedLabels ? rows.map((r) => r.label) : assignQuotationLabels(rows);
   const floorRuns = planFloorRuns(rows);
   const remarkLines = remarks
     .split("\n")

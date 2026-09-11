@@ -928,14 +928,20 @@ def split_room_floor(room: str) -> tuple[str, str]:
     return m.group("room").strip(), m.group("floor").strip()
 
 
-def build_quotation_rows(preview_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+def build_quotation_rows(
+    preview_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str], bool]:
     """
     Reduces compute_price_preview()-shaped rows (or
     parse_exported_excel_for_quotation's output, same shape) down to the
     client-facing quotation columns: a floor/room grouping key, the 10DK
     price (M) and the purchased-at-cost price (N), a client-safe remark, and
-    a display label (see assign_quotation_labels). Returns (rows, warnings)
-    — one warning per row missing both prices.
+    a display label (see assign_quotation_labels). Returns (rows, warnings,
+    has_fixed_labels) — one warning per row missing both prices;
+    has_fixed_labels tells the caller whether `label` came verbatim from the
+    source file's own numbering (True — the frontend must not recompute it
+    on edit) or from assign_quotation_labels (False — house mode, where the
+    frontend live-recomputes labels the same way on every edit).
     """
     rows: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -970,10 +976,24 @@ def build_quotation_rows(preview_rows: list[dict[str, Any]]) -> tuple[list[dict[
             "actual_price_purchase": actual_price_purchase,
             "is_client_owned": False,
             "remark": str(row.get("auto_note") or "").strip(),
+            "_source_label": row.get("source_label"),
         })
-    for row, label in zip(rows, assign_quotation_labels(rows)):
-        row["label"] = label
-    return rows, warnings
+    # parse_exported_excel_for_quotation's rows already carry the item's own
+    # running number from the source file's room/item-no column (per client
+    # request — the numbers already printed there should be reused as-is,
+    # not recomputed) — use those verbatim when every row has one, otherwise
+    # fall back to assign_quotation_labels's numeric/lettered/"Client's"
+    # convention (house mode, which has no such source numbering).
+    has_fixed_labels = bool(rows) and all(r["_source_label"] for r in rows)
+    if has_fixed_labels:
+        for row in rows:
+            row["label"] = row.pop("_source_label")
+    else:
+        for row in rows:
+            row.pop("_source_label", None)
+        for row, label in zip(rows, assign_quotation_labels(rows)):
+            row["label"] = label
+    return rows, warnings, has_fixed_labels
 
 
 def read_workbook_from_bytes_computed(file_bytes: bytes):
@@ -1014,9 +1034,10 @@ def parse_exported_excel_for_quotation(
     name here).
 
     The 10DK's-work and purchase-price columns are read from fixed columns
-    K and L respectively — per client request, hardcoded specifically for
-    this "upload Excel" quotation path rather than col_map's own
-    formula_m_col/purchased_price_col (M/N), which the write/compute-preview
+    M and N respectively (headed "10DK Price" / "งานจัดซื้อ เบิกจ่ายตามราคาจริง"
+    in the reference template) — per client confirmation, hardcoded
+    specifically for this "upload Excel" quotation path rather than col_map's
+    own formula_m_col/purchased_price_col, which the write/compute-preview
     pipeline elsewhere in this module still uses unchanged.
     """
     wb = read_workbook_from_bytes_computed(file_bytes)
@@ -1027,8 +1048,8 @@ def parse_exported_excel_for_quotation(
     room_idx = column_index_from_string(col_map.room_col)
     item_idx = column_index_from_string(col_map.item_col)
     qty_idx = column_index_from_string(col_map.qty_col)
-    m_idx = column_index_from_string("K")
-    n_idx = column_index_from_string("L")
+    m_idx = column_index_from_string("M")
+    n_idx = column_index_from_string("N")
 
     # find_grand_total_row() detects the summary row by its literal
     # "=SUM(...)" formula text — but `ws` above was loaded with
@@ -1080,6 +1101,11 @@ def parse_exported_excel_for_quotation(
             "quantity": ws.cell(row=r, column=qty_idx).value or 0,
             "m_10dk_price": m_price,
             "n_actual_price": n_price,
+            # Item rows hold their own running number in the room column
+            # (see the docstring above) — per client request, reuse that
+            # number as the quotation's item label as-is instead of letting
+            # build_quotation_rows recompute a numeric/lettered sequence.
+            "source_label": str(room_val).strip() if room_val not in (None, "") else None,
         })
 
     if item_rows_found > 0 and priced_rows_found == 0:

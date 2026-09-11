@@ -261,11 +261,14 @@ class QuotationRow(BaseModel):
     # template. Never set by the pricing pipeline; only by manual edit.
     is_client_owned: bool = False
     remark: str = ""
-    # Server-computed display label ("1", "2", ... for rows priced under
-    # 10DK's work; "A", "B", ... for rows priced under the purchase column;
-    # "Client's" for customer-owned rows) — always recomputed from the
+    # Display label. Normally server-computed ("1", "2", ... for rows priced
+    # under 10DK's work; "A", "B", ... for rows priced under the purchase
+    # column; "Client's" for customer-owned rows) and recomputed from the
     # current row list right before use, so any value sent by the client is
-    # ignored on the way back in.
+    # ignored on the way back in — EXCEPT when the preview response this row
+    # came from had has_fixed_labels=True, in which case this is instead the
+    # item's own running number from the source Excel file's room/item-no
+    # column, reused verbatim and never recomputed (see build_quotation_rows).
     label: str = ""
 
 
@@ -282,6 +285,12 @@ class QuotationPreview(BaseModel):
     purchase_subtotal: float
     vat: float
     grand_total: float
+    # True when every row's `label` is the source file's own item number
+    # (Excel-upload mode) rather than a computed numeric/lettered sequence
+    # (house mode) — tells the frontend whether it's safe to recompute
+    # labels live during in-table editing (house mode) or must keep using
+    # the value from `label` as-is (fixed).
+    has_fixed_labels: bool = False
 
 
 class QuotationPdfRequest(BaseModel):
@@ -297,6 +306,10 @@ class QuotationPdfRequest(BaseModel):
     remarks: str = ""
     # Small italic note shown next to the Grand Total row.
     grand_total_note: str = "(ไม่รวมรายการ TBC ค่าขนส่ง, ค่าประกอบและค่าติดตั้ง)"
+    # Mirrors QuotationPreview.has_fixed_labels — when true, _rows_with_fresh_labels
+    # must NOT recompute `rows[].label` (Excel-upload mode; the source file's
+    # own item numbers must survive into the exported PDF/Word doc as-is).
+    has_fixed_labels: bool = False
 
 
 class QuotationDetails(BaseModel):

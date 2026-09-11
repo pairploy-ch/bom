@@ -228,9 +228,12 @@ export interface QuotationRow {
   actual_price_purchase: number | null;
   is_client_owned: boolean;
   remark: string;
-  // Server-computed display label ("1"/"2"/... under 10DK's work, "A"/"B"/...
-  // under the purchase column, "Client's" for customer-owned rows) — also
-  // recomputed live on the frontend as rows are edited, see assignQuotationLabels.
+  // Display label. Normally server-computed ("1"/"2"/... under 10DK's work,
+  // "A"/"B"/... under the purchase column, "Client's" for customer-owned
+  // rows) and also recomputed live on the frontend as rows are edited, see
+  // assignQuotationLabels — EXCEPT when the QuotationPreview this row came
+  // from had has_fixed_labels=true, in which case it's the item's own
+  // running number from the source Excel file and must be used as-is.
   label: string;
 }
 
@@ -241,6 +244,7 @@ export interface QuotationPreview {
   purchase_subtotal: number;
   vat: number;
   grand_total: number;
+  has_fixed_labels: boolean;
 }
 
 // Saved "บันทึก" checkpoint for the quotation page's Preview table (house

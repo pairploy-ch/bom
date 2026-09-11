@@ -197,6 +197,7 @@ export default function QuotationPage() {
         deposit_deduction: depositDeduction,
         remarks,
         grand_total_note: grandTotalNote,
+        has_fixed_labels: preview.data?.has_fixed_labels,
       }),
     onSuccess: (blob) => triggerDownload(blob, "ใบเสนอราคา.pdf"),
     onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to generate the PDF."),
@@ -212,6 +213,7 @@ export default function QuotationPage() {
         deposit_deduction: depositDeduction,
         remarks,
         grand_total_note: grandTotalNote,
+        has_fixed_labels: preview.data?.has_fixed_labels,
       }),
     onSuccess: (blob) => triggerDownload(blob, "ใบเสนอราคา.docx"),
     onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to generate the Word file."),
@@ -473,6 +475,7 @@ export default function QuotationPage() {
               grandTotal={totals.grandTotal}
               grandTotalNote={grandTotalNote}
               remarks={remarks}
+              hasFixedLabels={preview.data?.has_fixed_labels}
             />
           </div>
         </Card>

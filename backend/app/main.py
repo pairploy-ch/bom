@@ -817,7 +817,7 @@ def preview_quotation_from_house(house_id: str, body: QuotationBuildRequest):
         raise HTTPException(400, "Upload the Excel template (Step 1) first.")
     rows = [r.model_dump(exclude={"suspicious"}) for r in body.rows]
     preview = compute_price_preview(row["excel_bytes"], rows, _col_map(body.column_mapping), body.sheet_name)
-    quotation_rows, row_warnings = build_quotation_rows(preview["rows"])
+    quotation_rows, row_warnings, has_fixed_labels = build_quotation_rows(preview["rows"])
     dk_work_subtotal, purchase_subtotal, vat, grand_total = _quotation_totals(quotation_rows)
     return QuotationPreview(
         rows=quotation_rows,
@@ -826,6 +826,7 @@ def preview_quotation_from_house(house_id: str, body: QuotationBuildRequest):
         purchase_subtotal=purchase_subtotal,
         vat=vat,
         grand_total=grand_total,
+        has_fixed_labels=has_fixed_labels,
     )
 
 
@@ -853,7 +854,7 @@ async def inspect_quotation_excel(file: UploadFile = File(...)):
 async def preview_quotation_from_excel(file: UploadFile = File(...), sheet_name: str = Form(...)):
     file_bytes = await file.read()
     parsed_rows, parse_warnings = parse_exported_excel_for_quotation(file_bytes, sheet_name, ColumnMapping())
-    quotation_rows, row_warnings = build_quotation_rows(parsed_rows)
+    quotation_rows, row_warnings, has_fixed_labels = build_quotation_rows(parsed_rows)
     dk_work_subtotal, purchase_subtotal, vat, grand_total = _quotation_totals(quotation_rows)
     return QuotationPreview(
         rows=quotation_rows,
@@ -862,17 +863,23 @@ async def preview_quotation_from_excel(file: UploadFile = File(...), sheet_name:
         purchase_subtotal=purchase_subtotal,
         vat=vat,
         grand_total=grand_total,
+        has_fixed_labels=has_fixed_labels,
     )
 
 
-def _rows_with_fresh_labels(body_rows: list[Any]) -> list[dict[str, Any]]:
+def _rows_with_fresh_labels(body_rows: list[Any], has_fixed_labels: bool = False) -> list[dict[str, Any]]:
     """
     Recomputes each row's display label from scratch before rendering — the
     browser may have edited prices / toggled "Client's" since the row list
     was first built, which shifts which numeric/lettered sequence a row
-    belongs to (see assign_quotation_labels).
+    belongs to (see assign_quotation_labels). Skipped when has_fixed_labels
+    is set (Excel-upload mode) — there, `label` is the source file's own
+    item number and must reach the exported doc unchanged, regardless of
+    what got edited.
     """
     rows = [r.model_dump() for r in body_rows]
+    if has_fixed_labels:
+        return rows
     for row, label in zip(rows, assign_quotation_labels(rows)):
         row["label"] = label
     return rows
@@ -880,7 +887,7 @@ def _rows_with_fresh_labels(body_rows: list[Any]) -> list[dict[str, Any]]:
 
 @app.post("/api/quotation-doc/pdf")
 def download_quotation_pdf(body: QuotationPdfRequest):
-    rows = _rows_with_fresh_labels(body.rows)
+    rows = _rows_with_fresh_labels(body.rows, body.has_fixed_labels)
     logo = db.get_company_logo()
     pdf_bytes = generate_quotation_pdf(
         rows,
@@ -901,7 +908,7 @@ def download_quotation_pdf(body: QuotationPdfRequest):
 
 @app.post("/api/quotation-doc/docx")
 def download_quotation_docx(body: QuotationPdfRequest):
-    rows = _rows_with_fresh_labels(body.rows)
+    rows = _rows_with_fresh_labels(body.rows, body.has_fixed_labels)
     logo = db.get_company_logo()
     docx_bytes = generate_quotation_docx(
         rows,

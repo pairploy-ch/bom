@@ -302,6 +302,7 @@ export const api = {
     deposit_deduction: number;
     remarks: string;
     grand_total_note: string;
+    has_fixed_labels?: boolean;
   }) => requestBlob("/quotation-doc/pdf", json(payload)),
 
   downloadQuotationDocx: (payload: {
@@ -312,6 +313,7 @@ export const api = {
     deposit_deduction: number;
     remarks: string;
     grand_total_note: string;
+    has_fixed_labels?: boolean;
   }) => requestBlob("/quotation-doc/docx", json(payload)),
 
   uploadCompanyLogo: (file: File) => {
