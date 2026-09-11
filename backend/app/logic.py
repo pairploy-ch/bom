@@ -1051,18 +1051,23 @@ def parse_exported_excel_for_quotation(
     m_idx = column_index_from_string("M")
     n_idx = column_index_from_string("N")
 
-    # find_grand_total_row() detects the summary row by its literal
-    # "=SUM(...)" formula text — but `ws` above was loaded with
-    # data_only=True (so K/L resolve to computed numbers, needed to read
-    # each item's actual price), and a data_only=True sheet never exposes
-    # formula strings, only their cached values. So detection needs a
-    # second, formula-preserving load of the same bytes purely to locate
-    # the boundary; without this, the grand-total row (item column holds
-    # "ราคารวมสุทธิ: ... บาท", K/L hold the SUM'd totals) was being read
-    # back in as if it were an ordinary priced item.
-    formula_wb = load_workbook_from_bytes(file_bytes)
-    formula_ws = formula_wb[sheet_name] if sheet_name in formula_wb.sheetnames else None
-    total_row = find_grand_total_row(formula_ws, col_map.start_row) if formula_ws is not None else None
+    # The grand-total row is identified by its own literal marker text
+    # ("ราคารวมสุทธิ: ... บาท", written into the item-name column — see
+    # write_mapping_to_excel) rather than find_grand_total_row()'s broader
+    # "any cell with a SUM(...) formula" heuristic (used elsewhere for a
+    # different purpose — locating a template's own pre-existing total row
+    # before anything has been appended to it). That heuristic is too broad
+    # here: a perfectly ordinary line item computed as a percentage of a
+    # SUM (e.g. a "management fee, 5% of 10DK price" row using a formula
+    # like =SUM(M5:M90)*0.05) would also match, getting misread as the
+    # boundary and silently dropping every real row after it — including,
+    # in the case that surfaced this, the fee row itself.
+    total_row = None
+    for r in range(col_map.start_row, ws.max_row + 1):
+        val = ws.cell(row=r, column=item_idx).value
+        if isinstance(val, str) and "ราคารวมสุทธิ" in val:
+            total_row = r
+            break
     last_row = (total_row - 1) if total_row is not None else ws.max_row
 
     def as_price(val: Any) -> float | None:
