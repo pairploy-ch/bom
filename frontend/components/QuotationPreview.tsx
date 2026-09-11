@@ -3,7 +3,7 @@ import type { QuotationRow } from "@/lib/types";
 import { cn, Input } from "@/components/ui/primitives";
 
 const fmt = (v: number | null | undefined) =>
-  v === null || v === undefined ? "" : v.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  v === null || v === undefined ? "" : v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const OPTION_RE = /option\s*(\d+)/i;
 

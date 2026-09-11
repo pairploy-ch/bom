@@ -897,6 +897,37 @@ def assign_quotation_labels(rows: list[dict[str, Any]]) -> list[str]:
     return labels
 
 
+# Matches a combined "<Room Name> - <Floor>" room string, as commonly
+# written in source floor-plan/furniture-list files (e.g. "Living & Play
+# Area - 1st Floor"), so build_quotation_rows can split it into the
+# quotation's own two-level Floor > Room grouping automatically instead of
+# requiring the floor to be typed in by hand every time.
+_FLOOR_SUFFIX_RE = re.compile(
+    r"^(?P<room>.+?)\s*[-–—:]\s*(?P<floor>"
+    r"\d+(?:st|nd|rd|th)\s*Floor"
+    r"|Floor\s*\d+"
+    r"|Ground\s*Floor"
+    r"|Roof(?:top)?(?:\s*Floor)?"
+    r"|Basement(?:\s*Floor)?"
+    r"|ชั้น(?:ที่)?\s*\S+"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
+
+def split_room_floor(room: str) -> tuple[str, str]:
+    """
+    Splits a combined "<Room Name> - <Floor>" string into (room, floor).
+    Returns (room, "") unchanged if no recognizable floor suffix is found —
+    the floor band then stays blank, same as before this split existed, and
+    can still be filled in by hand in the quotation preview table.
+    """
+    m = _FLOOR_SUFFIX_RE.match(room.strip())
+    if not m:
+        return room.strip(), ""
+    return m.group("room").strip(), m.group("floor").strip()
+
+
 def build_quotation_rows(preview_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
     """
     Reduces compute_price_preview()-shaped rows (or
@@ -919,10 +950,11 @@ def build_quotation_rows(preview_rows: list[dict[str, Any]]) -> tuple[list[dict[
         actual_price_purchase = row.get("n_actual_price") or None
         if dk_work_price is None and actual_price_purchase is None:
             warnings.append(f"⚠️ รายการ '{item_name}' ยังไม่มีราคา — จะไม่รวมในยอดสุทธิ")
+        room_name, floor = split_room_floor(str(row.get("room", "")))
         rows.append({
             "item_no": i,
-            "floor": "",
-            "room": row.get("room", ""),
+            "floor": floor,
+            "room": room_name,
             "item_name": item_name,
             "quantity": row.get("quantity", 0),
             "dk_work_price": dk_work_price,
@@ -1117,7 +1149,7 @@ _QUOTATION_LETTER_ROW_BG = "#b3b3b3"
 
 
 def _fmt_money(v: float | None) -> str:
-    return "" if v is None else f"{v:,.0f}"
+    return "" if v is None else f"{v:,.2f}"
 
 
 _REMARK_EMPHASIS_RE = re.compile(r"\*\*(.+?)\*\*")
