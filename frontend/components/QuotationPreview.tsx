@@ -5,6 +5,13 @@ import { cn, Input } from "@/components/ui/primitives";
 const fmt = (v: number | null | undefined) =>
   v === null || v === undefined ? "" : v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+// Rounds to 2 decimals for the raw editable price inputs below — backend
+// now rounds these before sending, but a saved quotation from before that
+// fix (or any other future source) could still carry binary-float noise
+// like 151812.93750000003, and these <input type="number"> cells render
+// the raw value with no formatter in between.
+const round2 = (v: number) => Math.round((v + Number.EPSILON) * 100) / 100;
+
 const OPTION_RE = /option\s*(\d+)/i;
 
 // An item name with no "Option N" label always counts. One that does (e.g.
@@ -234,7 +241,7 @@ export function QuotationPreviewTable({
                             ) : (
                               <Input
                                 type="number"
-                                value={r.dk_work_price ?? ""}
+                                value={r.dk_work_price == null ? "" : round2(r.dk_work_price)}
                                 onChange={(e) => onRowChange(i, { dk_work_price: parsePrice(e.target.value) })}
                                 className="text-right"
                               />
@@ -246,7 +253,7 @@ export function QuotationPreviewTable({
                             ) : (
                               <Input
                                 type="number"
-                                value={r.actual_price_purchase ?? ""}
+                                value={r.actual_price_purchase == null ? "" : round2(r.actual_price_purchase)}
                                 placeholder={unpriced ? "TBC" : undefined}
                                 onChange={(e) =>
                                   onRowChange(i, { actual_price_purchase: parsePrice(e.target.value) })

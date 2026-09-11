@@ -948,6 +948,15 @@ def build_quotation_rows(preview_rows: list[dict[str, Any]]) -> tuple[list[dict[
         # branches, so a falsy check (not a None check) is required here.
         dk_work_price = row.get("m_10dk_price") or None
         actual_price_purchase = row.get("n_actual_price") or None
+        # Round off here, not just at display time — compute_price_preview's
+        # chained multiplier math (unit_price * h_mult * i_mult * m_mult...)
+        # accumulates binary floating-point noise (e.g. 151812.93750000003),
+        # which would otherwise show up raw in the quotation's editable
+        # price inputs (those aren't run through any formatter).
+        if dk_work_price is not None:
+            dk_work_price = round(dk_work_price, 2)
+        if actual_price_purchase is not None:
+            actual_price_purchase = round(actual_price_purchase, 2)
         if dk_work_price is None and actual_price_purchase is None:
             warnings.append(f"⚠️ รายการ '{item_name}' ยังไม่มีราคา — จะไม่รวมในยอดสุทธิ")
         room_name, floor = split_room_floor(str(row.get("room", "")))
