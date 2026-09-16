@@ -23,6 +23,7 @@ import type {
   ContractDetails,
   QuotationPreview as QuotationPreviewData,
   QuotationRow,
+  SignatureRole,
 } from "@/lib/types";
 import { houseKey, useHouse } from "@/hooks/useHouse";
 import { Alert, Button, Card, CardHeader, Field, Input, Select, Spinner, Textarea } from "@/components/ui/primitives";
@@ -401,6 +402,15 @@ export default function ContractPage() {
                       />
                     </Field>
                   </div>
+                  <div className="sm:col-span-2">
+                    <SignatureUploader
+                      label="ลายเซ็น"
+                      imageUrl={api.contractSignatureUrl(houseId, "client")}
+                      queryKey={["contract-signature", houseId, "client"]}
+                      uploadFn={(file) => api.uploadContractSignature(houseId, "client", file)}
+                      deleteFn={() => api.deleteContractSignature(houseId, "client")}
+                    />
+                  </div>
                 </div>
               </Card>
 
@@ -425,6 +435,15 @@ export default function ContractPage() {
                       onChange={(e) => setField("contractor_address", e.target.value)}
                     />
                   </Field>
+                  <div className="sm:col-span-2">
+                    <SignatureUploader
+                      label="ลายเซ็น (ใช้กับทุกสัญญา)"
+                      imageUrl={api.contractorSignatureUrl()}
+                      queryKey={["contractor-signature"]}
+                      uploadFn={(file) => api.uploadContractorSignature(file)}
+                      deleteFn={() => api.deleteContractorSignature()}
+                    />
+                  </div>
                 </div>
               </Card>
 
@@ -551,6 +570,20 @@ export default function ContractPage() {
                   <Field label="พยานฝั่งผู้รับจ้าง">
                     <Input value={details.witness_2_name} onChange={(e) => setField("witness_2_name", e.target.value)} />
                   </Field>
+                  <SignatureUploader
+                    label="ลายเซ็นพยานฝั่งผู้ว่าจ้าง"
+                    imageUrl={api.contractSignatureUrl(houseId, "witness_1")}
+                    queryKey={["contract-signature", houseId, "witness_1"]}
+                    uploadFn={(file) => api.uploadContractSignature(houseId, "witness_1", file)}
+                    deleteFn={() => api.deleteContractSignature(houseId, "witness_1")}
+                  />
+                  <SignatureUploader
+                    label="ลายเซ็นพยานฝั่งผู้รับจ้าง"
+                    imageUrl={api.contractSignatureUrl(houseId, "witness_2")}
+                    queryKey={["contract-signature", houseId, "witness_2"]}
+                    uploadFn={(file) => api.uploadContractSignature(houseId, "witness_2", file)}
+                    deleteFn={() => api.deleteContractSignature(houseId, "witness_2")}
+                  />
                 </div>
               </Card>
 
@@ -822,5 +855,109 @@ export default function ContractPage() {
         </div>
       )}
     </div>
+  );
+}
+
+// A small upload/preview/remove widget for one signature slot (client,
+// contractor, witness_1, witness_2) — same "check if one exists via a HEAD-
+// ish GET" pattern as the company logo uploader on the quotation page, just
+// parameterized so it works for both the per-house roles and the single
+// global contractor signature.
+function SignatureUploader({
+  label,
+  imageUrl,
+  queryKey,
+  uploadFn,
+  deleteFn,
+}: {
+  label: string;
+  imageUrl: string;
+  queryKey: unknown[];
+  uploadFn: (file: File) => Promise<{ updated: boolean }>;
+  deleteFn: () => Promise<{ deleted: boolean }>;
+}) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [imgKey, setImgKey] = useState(0);
+
+  const hasSignature = useQuery({
+    queryKey,
+    queryFn: async () => {
+      const res = await fetch(imageUrl);
+      return res.ok;
+    },
+  });
+
+  const upload = useMutation({
+    mutationFn: uploadFn,
+    onSuccess: () => {
+      toast.success("อัปโหลดลายเซ็นแล้ว");
+      setImgKey((k) => k + 1);
+      queryClient.invalidateQueries({ queryKey });
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to upload signature."),
+  });
+
+  const remove = useMutation({
+    mutationFn: deleteFn,
+    onSuccess: () => {
+      toast.success("ลบลายเซ็นแล้ว");
+      queryClient.invalidateQueries({ queryKey });
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to remove signature."),
+  });
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) upload.mutate(file);
+    e.target.value = "";
+  };
+
+  return (
+    <Field label={label}>
+      <div className="flex items-center gap-3">
+        {hasSignature.data ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            key={imgKey}
+            src={imageUrl}
+            alt={label}
+            className="h-12 w-28 rounded border border-slate-200 bg-white object-contain px-2"
+          />
+        ) : (
+          <div className="flex h-12 w-28 items-center justify-center rounded border border-dashed border-slate-300 text-xs text-slate-400">
+            ไม่มีลายเซ็น
+          </div>
+        )}
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/png,image/*"
+          className="hidden"
+          onChange={handleFile}
+          disabled={upload.isPending}
+        />
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={() => inputRef.current?.click()}
+          disabled={upload.isPending}
+        >
+          {upload.isPending ? <Spinner /> : <Upload size={14} />}
+          {hasSignature.data ? "เปลี่ยน" : "อัปโหลด"}
+        </Button>
+        {hasSignature.data && (
+          <button
+            type="button"
+            onClick={() => remove.mutate()}
+            disabled={remove.isPending}
+            className="inline-flex items-center gap-1 text-xs font-medium text-red-600 hover:text-red-700"
+          >
+            <Trash2 size={13} /> ลบ
+          </button>
+        )}
+      </div>
+    </Field>
   );
 }

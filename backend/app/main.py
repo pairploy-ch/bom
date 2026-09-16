@@ -372,6 +372,20 @@ def get_contract_attachment_file(house_id: str, attachment_id: int):
     return Response(content=image_bytes, media_type=content_type)
 
 
+def _load_contract_signatures(house_id: str) -> dict[str, bytes]:
+    """
+    Assembles the {role: image_bytes} map generate_contract_pdf/docx embed
+    above each signature line — the three per-house roles (client,
+    witness_1, witness_2) plus the single global contractor signature.
+    Roles with nothing uploaded are simply absent from the returned dict.
+    """
+    signatures = {role: img_bytes for role, (img_bytes, _ct) in db.get_contract_signatures(house_id).items()}
+    contractor_sig = db.get_contractor_signature()
+    if contractor_sig is not None:
+        signatures["contractor"] = contractor_sig[0]
+    return signatures
+
+
 @app.post("/api/houses/{house_id}/contract/pdf")
 def download_contract_pdf(house_id: str, body: ContractPdfRequest):
     row = _get_house_or_404(house_id)
@@ -385,6 +399,7 @@ def download_contract_pdf(house_id: str, body: ContractPdfRequest):
         deposit_deduction=body.deposit_deduction,
         remarks=body.remarks,
         grand_total_note=body.grand_total_note,
+        signatures=_load_contract_signatures(house_id),
     )
     return Response(
         content=pdf_bytes,
@@ -406,6 +421,7 @@ def download_contract_docx(house_id: str, body: ContractPdfRequest):
         deposit_deduction=body.deposit_deduction,
         remarks=body.remarks,
         grand_total_note=body.grand_total_note,
+        signatures=_load_contract_signatures(house_id),
     )
     return Response(
         content=docx_bytes,
@@ -966,6 +982,67 @@ def get_company_logo():
         raise HTTPException(404, "No logo uploaded yet.")
     logo_bytes, content_type = logo
     return Response(content=logo_bytes, media_type=content_type)
+
+
+# --------------------------------------------------------- contract signatures --
+# ผู้รับจ้าง (10DK)'s signature is the same person on every contract, so it's
+# a single global asset like the company logo above. ผู้ว่าจ้าง/พยาน signatures
+# differ per house/contract, so those are keyed by (house_id, role) instead.
+
+_CONTRACT_SIGNATURE_ROLES = {"client", "witness_1", "witness_2"}
+
+
+@app.put("/api/contract/contractor-signature")
+async def upload_contractor_signature(file: UploadFile = File(...)):
+    file_bytes = await file.read()
+    content_type = file.content_type or "image/png"
+    if not content_type.startswith("image/"):
+        raise HTTPException(422, "Signature must be an image file (PNG/JPEG).")
+    db.set_contractor_signature(file_bytes, content_type)
+    return {"updated": True}
+
+
+@app.get("/api/contract/contractor-signature")
+def get_contractor_signature():
+    sig = db.get_contractor_signature()
+    if sig is None:
+        raise HTTPException(404, "No signature uploaded yet.")
+    sig_bytes, content_type = sig
+    return Response(content=sig_bytes, media_type=content_type)
+
+
+@app.delete("/api/contract/contractor-signature")
+def remove_contractor_signature():
+    db.delete_contractor_signature()
+    return {"deleted": True}
+
+
+@app.put("/api/houses/{house_id}/contract/signature/{role}")
+async def upload_contract_signature(house_id: str, role: str, file: UploadFile = File(...)):
+    _get_house_or_404(house_id)
+    if role not in _CONTRACT_SIGNATURE_ROLES:
+        raise HTTPException(400, f"Unknown signature role '{role}'.")
+    file_bytes = await file.read()
+    content_type = file.content_type or "image/png"
+    if not content_type.startswith("image/"):
+        raise HTTPException(422, "Signature must be an image file (PNG/JPEG).")
+    db.set_contract_signature(house_id, role, file_bytes, content_type)
+    return {"updated": True}
+
+
+@app.get("/api/houses/{house_id}/contract/signature/{role}")
+def get_contract_signature(house_id: str, role: str):
+    sig = db.get_contract_signature(house_id, role)
+    if sig is None:
+        raise HTTPException(404, "No signature uploaded yet.")
+    sig_bytes, content_type = sig
+    return Response(content=sig_bytes, media_type=content_type)
+
+
+@app.delete("/api/houses/{house_id}/contract/signature/{role}")
+def remove_contract_signature(house_id: str, role: str):
+    db.delete_contract_signature(house_id, role)
+    return {"deleted": True}
 
 
 # ------------------------------------------------------------------ profile --

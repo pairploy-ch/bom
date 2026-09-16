@@ -22,6 +22,7 @@ import type {
   QuotationRow,
   RawTextSearchResult,
   SetMultiplierResponse,
+  SignatureRole,
   TemplateUploadResponse,
   WorkflowStep,
 } from "./types";
@@ -331,6 +332,32 @@ export const api = {
   // Cache-busted so a freshly-uploaded logo shows up immediately instead of
   // the browser reusing a cached image at the same URL.
   companyLogoUrl: () => `${BASE}/quotation-doc/logo?t=${Date.now()}`,
+
+  // ----------------------------------------------- contract signatures --
+  // ผู้รับจ้าง (10DK)'s signature — same person on every contract, a single
+  // global asset like the company logo above.
+  uploadContractorSignature: (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request<{ updated: boolean }>("/contract/contractor-signature", { method: "PUT", body: fd });
+  },
+  contractorSignatureUrl: () => `${BASE}/contract/contractor-signature?t=${Date.now()}`,
+  deleteContractorSignature: () =>
+    request<{ deleted: boolean }>("/contract/contractor-signature", { method: "DELETE" }),
+
+  // ผู้ว่าจ้าง/พยาน signatures — differ per house/contract.
+  uploadContractSignature: (houseId: string, role: SignatureRole, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request<{ updated: boolean }>(`/houses/${houseId}/contract/signature/${role}`, {
+      method: "PUT",
+      body: fd,
+    });
+  },
+  contractSignatureUrl: (houseId: string, role: SignatureRole) =>
+    `${BASE}/houses/${houseId}/contract/signature/${role}?t=${Date.now()}`,
+  deleteContractSignature: (houseId: string, role: SignatureRole) =>
+    request<{ deleted: boolean }>(`/houses/${houseId}/contract/signature/${role}`, { method: "DELETE" }),
 
   // ------------------------------------------------------- contract (สัญญา) --
 

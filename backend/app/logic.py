@@ -1657,13 +1657,18 @@ def generate_quotation_pdf(
     return output.getvalue()
 
 
-def _build_contract_text_story(details: dict[str, Any]) -> list[Any]:
+def _build_contract_text_story(details: dict[str, Any], signatures: dict[str, bytes] | None = None) -> list[Any]:
     """
     Renders ข้อ 1-8 of the 10DK interior-design contract template. Only the
     template's actual blanks are read from `details` (a ContractDetails
     dict) — the fixed clauses (ช่างฝีมือ, ไม่รวมงานแก้ไข, ความเสียหาย,
     ดอกเบี้ย 15% ต่อปี, รับประกัน 1 ปี, การปิดท้ายสัญญา) are hardcoded here
     exactly as worded in the reference template.
+
+    `signatures`, if given, maps role -> signature image bytes for any of
+    "client", "contractor", "witness_1", "witness_2" — each present role's
+    image is embedded above its printed name in the sign-off table instead
+    of leaving that space blank for a hand-drawn signature.
     """
     _ensure_thai_fonts_registered()
 
@@ -1771,13 +1776,22 @@ def _build_contract_text_story(details: dict[str, Any]) -> list[Any]:
     def sign_cell(text: str) -> Paragraph:
         return Paragraph(text, sign_style)
 
+    def sig_cell(role: str) -> Any:
+        # Sits between the dotted "ลงชื่อ...." line and the printed name —
+        # a fixed-height Spacer when nothing's uploaded for this role keeps
+        # every column's rows aligned regardless of which roles have one.
+        img_bytes = (signatures or {}).get(role)
+        return _sized_image(img_bytes, 45 * mm, 12 * mm) if img_bytes else Spacer(1, 12 * mm)
+
     sign_rows = [
         ["ลงชื่อ....................................................ผู้ว่าจ้าง", "ลงชื่อ....................................................ผู้รับจ้าง"],
+        [sig_cell("client"), sig_cell("contractor")],
         [f"({g('client_name')})", f"({g('contractor_signatory')})"],
         ["", g("contractor_title")],
         ["", g("contractor_name")],
         [Spacer(1, 10 * mm), Spacer(1, 10 * mm)],
         ["ลงชื่อ....................................................พยาน", "ลงชื่อ....................................................พยาน"],
+        [sig_cell("witness_1"), sig_cell("witness_2")],
         [f"({g('witness_1_name')})", f"({g('witness_2_name')})"],
     ]
     sign_table = Table(
@@ -1858,6 +1872,7 @@ def generate_contract_pdf(
     deposit_deduction: float = 0,
     remarks: str = "",
     grand_total_note: str = "",
+    signatures: dict[str, bytes] | None = None,
 ) -> bytes:
     """
     The combined "ทำสัญญา" document: contract text (ข้อ 1-8) -> each saved
@@ -1880,7 +1895,7 @@ def generate_contract_pdf(
         "PriceTitle", fontName="TPTankhun-Bold", fontSize=14, leading=17, alignment=TA_CENTER
     )
 
-    story: list[Any] = _build_contract_text_story(details)
+    story: list[Any] = _build_contract_text_story(details, signatures)
 
     for attachment in attachments:
         story.append(PageBreak())
@@ -2240,10 +2255,13 @@ def _add_quotation_table_to_docx(
                     run.font.name = _DOCX_FONT
 
 
-def _build_contract_text_docx(doc: Document, details: dict[str, Any]) -> None:
+def _build_contract_text_docx(
+    doc: Document, details: dict[str, Any], signatures: dict[str, bytes] | None = None
+) -> None:
     """Word counterpart to _build_contract_text_story — same ข้อ 1-8 wording
     and blanks, appended directly to `doc` instead of returned as platypus
-    flowables. Fixed clauses are hardcoded here exactly as in the PDF path."""
+    flowables. Fixed clauses are hardcoded here exactly as in the PDF path.
+    `signatures` — see _build_contract_text_story's docstring."""
 
     def g(key: str) -> str:
         return str(details.get(key) or "")
@@ -2348,23 +2366,37 @@ def _build_contract_text_docx(doc: Document, details: dict[str, Any]) -> None:
     )
     doc.add_paragraph()
 
+    # A ("sig", role) cell embeds that role's signature image (if uploaded)
+    # between the dotted "ลงชื่อ...." line and the printed name below it;
+    # left empty (but present, for row alignment) when nothing's uploaded.
     sign_rows = [
         ["ลงชื่อ....................................................ผู้ว่าจ้าง", "ลงชื่อ....................................................ผู้รับจ้าง"],
+        [("sig", "client"), ("sig", "contractor")],
         [f"({g('client_name')})", f"({g('contractor_signatory')})"],
         ["", g("contractor_title")],
         ["", g("contractor_name")],
         ["", ""],
         ["ลงชื่อ....................................................พยาน", "ลงชื่อ....................................................พยาน"],
+        [("sig", "witness_1"), ("sig", "witness_2")],
         [f"({g('witness_1_name')})", f"({g('witness_2_name')})"],
     ]
     sign_table = doc.add_table(rows=len(sign_rows), cols=2)
     sign_table.autofit = False
     for r, row in enumerate(sign_rows):
         cells = sign_table.rows[r].cells
-        for c, text in enumerate(row):
+        for c, cell_val in enumerate(row):
             cells[c].width = Mm(85)
-            _set_cell_text(cells[c], text, align=WD_ALIGN_PARAGRAPH.CENTER, size=15)
-        if r == 4:
+            if isinstance(cell_val, tuple):
+                img_bytes = (signatures or {}).get(cell_val[1])
+                cells[c].text = ""
+                if img_bytes:
+                    w_mm, h_mm = _docx_image_size_mm(img_bytes, 45, 12)
+                    p = cells[c].paragraphs[0]
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    p.add_run().add_picture(io.BytesIO(img_bytes), width=Mm(w_mm), height=Mm(h_mm))
+            else:
+                _set_cell_text(cells[c], cell_val, align=WD_ALIGN_PARAGRAPH.CENTER, size=15)
+        if r == 5:
             # Blank spacer row (matches the PDF's Spacer(1, 10*mm) between
             # the signatory block and the witness block) — extra space
             # after this row's (empty) paragraphs instead of a real gap,
@@ -2391,6 +2423,7 @@ def generate_contract_docx(
     deposit_deduction: float = 0,
     remarks: str = "",
     grand_total_note: str = "",
+    signatures: dict[str, bytes] | None = None,
 ) -> bytes:
     """
     Word counterpart to generate_contract_pdf — same three sections
@@ -2410,7 +2443,7 @@ def generate_contract_docx(
     section.left_margin = Mm(10)
     section.right_margin = Mm(10)
 
-    _build_contract_text_docx(doc, details)
+    _build_contract_text_docx(doc, details, signatures)
 
     for attachment in attachments:
         doc.add_page_break()

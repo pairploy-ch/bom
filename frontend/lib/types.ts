@@ -264,6 +264,11 @@ export interface QuotationDetails {
 // template's actual fill-in-the-blank fields; fixed clauses (ข้อ 3-8) are
 // hardcoded server-side in logic.py's PDF generator, not form fields here.
 
+// The three per-house signature roles — matches main.py's
+// _CONTRACT_SIGNATURE_ROLES. ผู้รับจ้าง (10DK)'s signature is separate (a
+// single global asset, see api.uploadContractorSignature).
+export type SignatureRole = "client" | "witness_1" | "witness_2";
+
 export interface ContractDetails {
   property_description: string;
   contract_date: string;

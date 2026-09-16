@@ -249,6 +249,24 @@ def init_db() -> None:
                 company_logo_bytes BYTEA,
                 company_logo_content_type TEXT
             );
+            -- Same row (id=1) also holds the ผู้รับจ้าง (10DK) signatory's
+            -- signature image — that person is the same on every contract,
+            -- so it's uploaded once here rather than per-house like the
+            -- client/witness signatures below.
+            ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS contractor_signature_bytes BYTEA;
+            ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS contractor_signature_content_type TEXT;
+
+            -- ผู้ว่าจ้าง / พยาน signature images for the "ทำสัญญา" doc — these
+            -- differ per house/contract (unlike the contractor's, above), so
+            -- keyed by (house_id, role) rather than living on `houses`
+            -- itself as fixed columns, in case more roles are ever needed.
+            CREATE TABLE IF NOT EXISTS contract_signatures (
+                house_id TEXT NOT NULL REFERENCES houses(id) ON DELETE CASCADE,
+                role TEXT NOT NULL,
+                image_bytes BYTEA NOT NULL,
+                content_type TEXT NOT NULL,
+                PRIMARY KEY (house_id, role)
+            );
 
             -- Avatar images for the profile menu, keyed by Supabase Auth user
             -- id (a UUID string). Display name itself lives in Supabase's own
@@ -391,6 +409,7 @@ def reset_house(house_id: str) -> None:
         conn.execute("DELETE FROM quotation_pdfs WHERE house_id = %s", (house_id,))
         conn.execute("DELETE FROM export_versions WHERE house_id = %s", (house_id,))
         conn.execute("DELETE FROM contract_attachments WHERE house_id = %s", (house_id,))
+        conn.execute("DELETE FROM contract_signatures WHERE house_id = %s", (house_id,))
         conn.execute(
             """
             UPDATE houses
@@ -787,6 +806,83 @@ def get_company_logo() -> tuple[bytes, str] | None:
     if row is None or row["company_logo_bytes"] is None:
         return None
     return (bytes(row["company_logo_bytes"]), row["company_logo_content_type"] or "image/png")
+
+
+def set_contractor_signature(image_bytes: bytes, content_type: str) -> None:
+    """The ผู้รับจ้าง (10DK) signatory's signature — same person on every
+    contract, uploaded once here and reused, like the company logo."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings (id, contractor_signature_bytes, contractor_signature_content_type)
+            VALUES (1, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET contractor_signature_bytes = excluded.contractor_signature_bytes,
+                                            contractor_signature_content_type = excluded.contractor_signature_content_type
+            """,
+            (image_bytes, content_type),
+        )
+
+
+def get_contractor_signature() -> tuple[bytes, str] | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT contractor_signature_bytes, contractor_signature_content_type FROM app_settings WHERE id = 1"
+        ).fetchone()
+    if row is None or row["contractor_signature_bytes"] is None:
+        return None
+    return (bytes(row["contractor_signature_bytes"]), row["contractor_signature_content_type"] or "image/png")
+
+
+def delete_contractor_signature() -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE app_settings SET contractor_signature_bytes = NULL, "
+            "contractor_signature_content_type = NULL WHERE id = 1"
+        )
+
+
+# ------------------------------------------------------- contract signatures --
+# ผู้ว่าจ้าง/พยาน signature images — differ per house/contract, unlike the
+# contractor's (above). `role` is one of "client", "witness_1", "witness_2".
+
+def set_contract_signature(house_id: str, role: str, image_bytes: bytes, content_type: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO contract_signatures (house_id, role, image_bytes, content_type)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (house_id, role) DO UPDATE SET image_bytes = excluded.image_bytes,
+                                                         content_type = excluded.content_type
+            """,
+            (house_id, role, image_bytes, content_type),
+        )
+
+
+def get_contract_signature(house_id: str, role: str) -> tuple[bytes, str] | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT image_bytes, content_type FROM contract_signatures WHERE house_id = %s AND role = %s",
+            (house_id, role),
+        ).fetchone()
+    if row is None:
+        return None
+    return (bytes(row["image_bytes"]), row["content_type"])
+
+
+def get_contract_signatures(house_id: str) -> dict[str, tuple[bytes, str]]:
+    """All of this house's uploaded signature images, keyed by role — used
+    server-side when generating the contract PDF/Word doc."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT role, image_bytes, content_type FROM contract_signatures WHERE house_id = %s",
+            (house_id,),
+        ).fetchall()
+    return {r["role"]: (bytes(r["image_bytes"]), r["content_type"]) for r in rows}
+
+
+def delete_contract_signature(house_id: str, role: str) -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM contract_signatures WHERE house_id = %s AND role = %s", (house_id, role))
 
 
 # ------------------------------------------------------------- user avatars --
