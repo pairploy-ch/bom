@@ -44,6 +44,7 @@ from .logic import (
     match_prices_bucket,
     merge_bucket_results,
     parse_exported_excel_for_quotation,
+    parse_exported_pdf_for_quotation,
     read_anchor_value,
     write_mapping_to_excel,
 )
@@ -854,6 +855,23 @@ async def inspect_quotation_excel(file: UploadFile = File(...)):
 async def preview_quotation_from_excel(file: UploadFile = File(...), sheet_name: str = Form(...)):
     file_bytes = await file.read()
     parsed_rows, parse_warnings = parse_exported_excel_for_quotation(file_bytes, sheet_name, ColumnMapping())
+    quotation_rows, row_warnings, has_fixed_labels = build_quotation_rows(parsed_rows)
+    dk_work_subtotal, purchase_subtotal, vat, grand_total = _quotation_totals(quotation_rows)
+    return QuotationPreview(
+        rows=quotation_rows,
+        warnings=parse_warnings + row_warnings,
+        dk_work_subtotal=dk_work_subtotal,
+        purchase_subtotal=purchase_subtotal,
+        vat=vat,
+        grand_total=grand_total,
+        has_fixed_labels=has_fixed_labels,
+    )
+
+
+@app.post("/api/quotation-doc/preview-from-pdf", response_model=QuotationPreview)
+async def preview_quotation_from_pdf(file: UploadFile = File(...)):
+    file_bytes = await file.read()
+    parsed_rows, parse_warnings = parse_exported_pdf_for_quotation(file_bytes)
     quotation_rows, row_warnings, has_fixed_labels = build_quotation_rows(parsed_rows)
     dk_work_subtotal, purchase_subtotal, vat, grand_total = _quotation_totals(quotation_rows)
     return QuotationPreview(

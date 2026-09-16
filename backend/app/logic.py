@@ -1160,6 +1160,138 @@ def parse_exported_excel_for_quotation(
     return rows, warnings
 
 
+_PDF_TOTAL_ROW_MARKERS = ("ราคารวมสุทธิ", "รวมสุทธิ")
+
+
+def parse_exported_pdf_for_quotation(file_bytes: bytes) -> tuple[list[dict[str, Any]], list[str]]:
+    """
+    Heuristic reverse-parse of a PDF that's a direct print/export of the same
+    structured room-header + item-row template parse_exported_excel_for_quotation
+    reads from .xlsx — for when only a PDF of that table is available (no
+    .xlsx to hand). Purely a read — never persists anything.
+
+    Unlike the .xlsx path, there is no fixed column-letter mapping to rely
+    on: printing to PDF only keeps whichever columns were visible in Excel
+    at the time (per the reference file, typically just Supplier / room-or-
+    item-no / item name / 10DK Price / purchase price — the working
+    columns in between are hidden before printing). So columns are located
+    by matching the template's own header text ("Furniture List", "10DK",
+    "จำนวน", "จัดซื้อ"/"ราคาจริง") in whichever row carries it, rather than by
+    position — and the room/item-no column is assumed to sit immediately to
+    the left of the item-name column, mirroring the .xlsx template's B/C
+    layout.
+
+    This depends on pdfplumber successfully detecting the table's grid lines
+    (extract_tables() needs actual ruled borders, not just whitespace) —
+    a PDF without visible cell borders won't parse here.
+    """
+    all_rows: list[list[str]] = []
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        if len(pdf.pages) == 0:
+            raise LogicError("❌ The uploaded PDF has no pages.")
+        for page in pdf.pages:
+            for table in page.extract_tables():
+                for row in table:
+                    all_rows.append([str(c).strip() if c is not None else "" for c in row])
+
+    if not all_rows:
+        raise LogicError(
+            "⚠️ ไม่พบตารางในไฟล์ PDF นี้เลย — ต้องเป็น PDF ที่มีเส้นตาราง/กรอบชัดเจน "
+            "(เช่น print มาจากไฟล์ Excel เทมเพลตเดิม) การอ่านแบบไม่มีเส้นตารางยังไม่รองรับ"
+        )
+
+    header_idx: int | None = None
+    col_item: int | None = None
+    col_price_10dk: int | None = None
+    col_price_purchase: int | None = None
+    col_qty: int | None = None
+    for i, row in enumerate(all_rows):
+        for c, cell in enumerate(row):
+            if "Furniture" in cell:
+                col_item = c
+            elif "10DK" in cell:
+                col_price_10dk = c
+            elif "จัดซื้อ" in cell or "ราคาจริง" in cell:
+                col_price_purchase = c
+            elif "จำนวน" in cell:
+                col_qty = c
+        if col_item is not None:
+            header_idx = i
+            break
+
+    if header_idx is None or col_item is None:
+        raise LogicError(
+            "⚠️ ไม่พบหัวตาราง (เช่น 'Furniture List', '10DK Price') ในไฟล์ PDF นี้ — "
+            "ตรวจสอบว่าเป็น PDF ที่ print มาจากไฟล์ Excel เทมเพลตเดิม โดยยังเห็นแถวหัวตารางอยู่ครบ"
+        )
+    header_item_text = all_rows[header_idx][col_item]
+    col_room = col_item - 1 if col_item > 0 else None
+
+    def parse_price(text: str) -> float | None:
+        cleaned = text.replace(",", "").replace("บาท", "").strip()
+        if not cleaned:
+            return None
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    current_room = ""
+    for row in all_rows[header_idx + 1 :]:
+        if col_item >= len(row):
+            continue
+        item_text = row[col_item]
+        # A repeated header row (common with a "repeat header on every page"
+        # print setting) or the grand-total row — stop before the latter,
+        # skip the former.
+        if any(marker in item_text for marker in _PDF_TOTAL_ROW_MARKERS):
+            break
+        if item_text == header_item_text:
+            continue
+
+        if not item_text:
+            # A room-header band is usually one merged cell, so its text can
+            # land in any column of this row depending on how pdfplumber
+            # split it — take whichever cell actually has text rather than
+            # assuming it's specifically col_room.
+            row_text = next((c for c in row if c), "")
+            if row_text:
+                current_room = row_text
+            continue
+
+        room_text = row[col_room] if col_room is not None and col_room < len(row) else ""
+        m_price = parse_price(row[col_price_10dk]) if col_price_10dk is not None and col_price_10dk < len(row) else None
+        n_price = (
+            parse_price(row[col_price_purchase])
+            if col_price_purchase is not None and col_price_purchase < len(row)
+            else None
+        )
+        qty_text = row[col_qty] if col_qty is not None and col_qty < len(row) else ""
+        try:
+            quantity = float(qty_text.replace(",", "")) if qty_text else 0
+        except ValueError:
+            quantity = 0
+
+        if m_price is None and n_price is None:
+            warnings.append(f"⚠️ รายการ '{item_text}' ไม่พบราคาในไฟล์ PDF")
+
+        rows.append({
+            "room": current_room,
+            "item_name": strip_qa_markers(item_text),
+            "quantity": quantity,
+            "m_10dk_price": m_price,
+            "n_actual_price": n_price,
+            "source_label": room_text.strip() or None,
+        })
+
+    if not rows:
+        warnings.append("⚠️ ไม่พบรายการสินค้าในไฟล์ PDF นี้เลย — ตรวจสอบโครงสร้างตาราง")
+
+    return rows, warnings
+
+
 _QUOTATION_HEADERS = [
     "#",
     "Furniture List",

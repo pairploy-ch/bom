@@ -294,6 +294,12 @@ export const api = {
     return request<QuotationPreview>("/quotation-doc/preview-from-excel", { method: "POST", body: fd });
   },
 
+  previewQuotationFromPdf: (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request<QuotationPreview>("/quotation-doc/preview-from-pdf", { method: "POST", body: fd });
+  },
+
   downloadQuotationPdf: (payload: {
     client_name: string;
     project_name: string;

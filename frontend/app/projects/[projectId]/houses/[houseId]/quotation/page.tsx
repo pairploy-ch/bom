@@ -83,21 +83,29 @@ export default function QuotationPage() {
   // when only the file's content is edited and re-saved.
   const [excelUploadToken, setExcelUploadToken] = useState(0);
 
+  // A PDF has no sheets to pick — it's parsed as a single document, whereas
+  // an .xlsx needs the inspect round-trip to list its sheet names first.
+  const isPdfFile = (f: File | null) => !!f && f.name.toLowerCase().endsWith(".pdf");
+
   const inspectExcel = useMutation({
-    mutationFn: (file: File) => api.inspectQuotationExcel(file),
+    mutationFn: (file: File) =>
+      isPdfFile(file) ? Promise.resolve({ sheet_names: [] as string[] }) : api.inspectQuotationExcel(file),
     onSuccess: (res, file) => {
       setExcelFile(file);
       setExcelSheetNames(res.sheet_names);
       setExcelSheetName(res.sheet_names[0] || "");
       setExcelUploadToken((t) => t + 1);
     },
-    onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to read the Excel file."),
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to read the file."),
   });
 
   const excelPreview = useQuery<QuotationPreviewData>({
     queryKey: ["quotation-preview-excel", excelUploadToken, excelSheetName],
-    queryFn: () => api.previewQuotationFromExcel(excelFile as File, excelSheetName),
-    enabled: mode === "excel" && !!excelFile && !!excelSheetName,
+    queryFn: () =>
+      isPdfFile(excelFile)
+        ? api.previewQuotationFromPdf(excelFile as File)
+        : api.previewQuotationFromExcel(excelFile as File, excelSheetName),
+    enabled: mode === "excel" && !!excelFile && (isPdfFile(excelFile) || !!excelSheetName),
   });
 
   const handleExcelFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -330,7 +338,7 @@ export default function QuotationPage() {
                 <input
                   ref={fileInput}
                   type="file"
-                  accept=".xlsx"
+                  accept=".xlsx,.pdf"
                   className="hidden"
                   onChange={handleExcelFile}
                   disabled={inspectExcel.isPending}
@@ -344,9 +352,10 @@ export default function QuotationPage() {
                   <>
                     <Upload size={32} className="text-slate-400" />
                     <span className="text-sm font-medium text-slate-700">
-                      คลิกเพื่ออัปโหลดไฟล์ Excel ที่ export มาแล้ว (.xlsx)
+                      คลิกเพื่ออัปโหลดไฟล์ Excel (.xlsx) หรือ PDF ที่ export มาแล้ว
                     </span>
                     <span className="text-xs text-slate-400">
+                      ไฟล์ PDF ต้องมีเส้นตาราง/กรอบชัดเจน (เช่น print มาจากไฟล์ Excel เทมเพลตเดิม) —
                       แก้ไขค่าในไฟล์ได้ตามใจ แต่อย่าสลับ/ลบแถวหรือคอลัมน์ — ถ้าไฟล์มีสูตรที่ยังไม่เคยคำนวณ
                       ให้เปิดด้วย Excel แล้วบันทึกก่อนอัปโหลด
                     </span>

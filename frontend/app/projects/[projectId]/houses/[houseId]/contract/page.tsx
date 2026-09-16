@@ -216,21 +216,29 @@ export default function ContractPage() {
   const [priceExcelSheetName, setPriceExcelSheetName] = useState("");
   const [priceExcelUploadToken, setPriceExcelUploadToken] = useState(0);
 
+  // A PDF has no sheets to pick — it's parsed as a single document, whereas
+  // an .xlsx needs the inspect round-trip to list its sheet names first.
+  const isPricePdfFile = (f: File | null) => !!f && f.name.toLowerCase().endsWith(".pdf");
+
   const inspectPriceExcel = useMutation({
-    mutationFn: (file: File) => api.inspectQuotationExcel(file),
+    mutationFn: (file: File) =>
+      isPricePdfFile(file) ? Promise.resolve({ sheet_names: [] as string[] }) : api.inspectQuotationExcel(file),
     onSuccess: (res, file) => {
       setPriceExcelFile(file);
       setPriceExcelSheetNames(res.sheet_names);
       setPriceExcelSheetName(res.sheet_names[0] || "");
       setPriceExcelUploadToken((t) => t + 1);
     },
-    onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to read the Excel file."),
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to read the file."),
   });
 
   const excelPricePreview = useQuery<QuotationPreviewData>({
     queryKey: ["contract-price-preview-excel", priceExcelUploadToken, priceExcelSheetName],
-    queryFn: () => api.previewQuotationFromExcel(priceExcelFile as File, priceExcelSheetName),
-    enabled: priceMode === "excel" && !!priceExcelFile && !!priceExcelSheetName,
+    queryFn: () =>
+      isPricePdfFile(priceExcelFile)
+        ? api.previewQuotationFromPdf(priceExcelFile as File)
+        : api.previewQuotationFromExcel(priceExcelFile as File, priceExcelSheetName),
+    enabled: priceMode === "excel" && !!priceExcelFile && (isPricePdfFile(priceExcelFile) || !!priceExcelSheetName),
   });
 
   const handlePriceExcelFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -693,7 +701,7 @@ export default function ContractPage() {
                   <input
                     ref={priceFileInput}
                     type="file"
-                    accept=".xlsx"
+                    accept=".xlsx,.pdf"
                     className="hidden"
                     onChange={handlePriceExcelFile}
                     disabled={inspectPriceExcel.isPending}
@@ -707,10 +715,10 @@ export default function ContractPage() {
                     <>
                       <Upload size={32} className="text-slate-400" />
                       <span className="text-sm font-medium text-slate-700">
-                        คลิกเพื่ออัปโหลดไฟล์ Excel ที่ export มาแล้ว (.xlsx)
+                        คลิกเพื่ออัปโหลดไฟล์ Excel (.xlsx) หรือ PDF ที่ export มาแล้ว
                       </span>
                       <span className="text-xs text-slate-400">
-                        ไม่จำเป็นต้องใช้ข้อมูลราคาของบ้านนี้ — อัปโหลดไฟล์ใหม่ได้เลย
+                        ไม่จำเป็นต้องใช้ข้อมูลราคาของบ้านนี้ — อัปโหลดไฟล์ใหม่ได้เลย (PDF ต้องมีเส้นตาราง/กรอบชัดเจน)
                       </span>
                     </>
                   )}
