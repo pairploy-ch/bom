@@ -1,7 +1,17 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileEdit, FileSignature, FileText, Image as ImageIcon, Plus, Save, Trash2 } from "lucide-react";
+import {
+  FileEdit,
+  FileSignature,
+  FileText,
+  FolderOpen,
+  Image as ImageIcon,
+  Plus,
+  Save,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { useParams } from "next/navigation";
 import { useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
@@ -182,7 +192,10 @@ export default function ContractPage() {
 
   // ------------------------------------------------------------------ ใบราคา --
 
-  const pricePreview = useQuery<QuotationPreviewData>({
+  type PriceMode = "house" | "excel";
+  const [priceMode, setPriceMode] = useState<PriceMode>("house");
+
+  const housePricePreview = useQuery<QuotationPreviewData>({
     queryKey: ["contract-price-preview", houseId, house.data?.target_sheet_name],
     queryFn: () =>
       api.previewQuotationFromHouse(
@@ -191,14 +204,55 @@ export default function ContractPage() {
         house.data!.mapping_rows,
         DEFAULT_COLUMN_MAPPING
       ),
-    enabled: !!house.data?.target_sheet_name && (house.data?.mapping_rows.length ?? 0) > 0,
+    enabled: priceMode === "house" && !!house.data?.target_sheet_name && (house.data?.mapping_rows.length ?? 0) > 0,
   });
+
+  // Lets a brand-new price list be attached to the contract without first
+  // pulling in this house's already-calculated data — same "upload an
+  // already-exported Excel" path as the standalone quotation page.
+  const priceFileInput = useRef<HTMLInputElement>(null);
+  const [priceExcelFile, setPriceExcelFile] = useState<File | null>(null);
+  const [priceExcelSheetNames, setPriceExcelSheetNames] = useState<string[]>([]);
+  const [priceExcelSheetName, setPriceExcelSheetName] = useState("");
+  const [priceExcelUploadToken, setPriceExcelUploadToken] = useState(0);
+
+  const inspectPriceExcel = useMutation({
+    mutationFn: (file: File) => api.inspectQuotationExcel(file),
+    onSuccess: (res, file) => {
+      setPriceExcelFile(file);
+      setPriceExcelSheetNames(res.sheet_names);
+      setPriceExcelSheetName(res.sheet_names[0] || "");
+      setPriceExcelUploadToken((t) => t + 1);
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to read the Excel file."),
+  });
+
+  const excelPricePreview = useQuery<QuotationPreviewData>({
+    queryKey: ["contract-price-preview-excel", priceExcelUploadToken, priceExcelSheetName],
+    queryFn: () => api.previewQuotationFromExcel(priceExcelFile as File, priceExcelSheetName),
+    enabled: priceMode === "excel" && !!priceExcelFile && !!priceExcelSheetName,
+  });
+
+  const handlePriceExcelFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) inspectPriceExcel.mutate(file);
+    e.target.value = "";
+  };
+
+  const clearPriceExcelFile = () => {
+    setPriceExcelFile(null);
+    setPriceExcelSheetNames([]);
+    setPriceExcelSheetName("");
+    if (priceFileInput.current) priceFileInput.current.value = "";
+  };
+
+  const pricePreview = priceMode === "house" ? housePricePreview : excelPricePreview;
 
   const [priceRows, setPriceRows] = useState<QuotationRow[] | null>(null);
   const [priceSyncedFrom, setPriceSyncedFrom] = useState<QuotationPreviewData | undefined>(undefined);
-  if (pricePreview.data && pricePreview.data !== priceSyncedFrom) {
+  if (pricePreview.data !== priceSyncedFrom) {
     setPriceSyncedFrom(pricePreview.data);
-    setPriceRows(pricePreview.data.rows);
+    setPriceRows(pricePreview.data ? pricePreview.data.rows : null);
   }
 
   const updatePriceRow = (index: number, patch: Partial<QuotationRow>) =>
@@ -231,6 +285,7 @@ export default function ContractPage() {
         deposit_deduction: depositDeduction,
         remarks,
         grand_total_note: grandTotalNote,
+        has_fixed_labels: pricePreview.data?.has_fixed_labels,
       }),
     onSuccess: (blob) => triggerDownload(blob, "สัญญาจ้างตกแต่งภายใน.pdf"),
     onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to generate the contract PDF."),
@@ -243,6 +298,7 @@ export default function ContractPage() {
         deposit_deduction: depositDeduction,
         remarks,
         grand_total_note: grandTotalNote,
+        has_fixed_labels: pricePreview.data?.has_fixed_labels,
       }),
     onSuccess: (blob) => triggerDownload(blob, "สัญญาจ้างตกแต่งภายใน.docx"),
     onError: (err) => toast.error(err instanceof ApiError ? err.message : "Failed to generate the contract Word file."),
@@ -607,12 +663,91 @@ export default function ContractPage() {
 
       {tab === "price" && (
         <div className="space-y-6">
-          {house.isLoading && (
+          <Card>
+            <nav className="flex gap-1 border-b border-slate-200 px-2 pt-2">
+              {(
+                [
+                  { key: "house" as const, label: "บ้านนี้", icon: FolderOpen },
+                  { key: "excel" as const, label: "อัปโหลดไฟล์ Excel", icon: Upload },
+                ]
+              ).map((t) => (
+                <button
+                  key={t.key}
+                  onClick={() => setPriceMode(t.key)}
+                  className={
+                    "flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors " +
+                    (priceMode === t.key
+                      ? "border-indigo-600 text-indigo-600"
+                      : "border-transparent text-slate-500 hover:text-slate-800")
+                  }
+                >
+                  <t.icon size={16} />
+                  {t.label}
+                </button>
+              ))}
+            </nav>
+
+            {priceMode === "excel" && (
+              <div className="space-y-3 p-5">
+                <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 px-6 py-8 text-center hover:border-indigo-300 hover:bg-indigo-50/40">
+                  <input
+                    ref={priceFileInput}
+                    type="file"
+                    accept=".xlsx"
+                    className="hidden"
+                    onChange={handlePriceExcelFile}
+                    disabled={inspectPriceExcel.isPending}
+                  />
+                  {inspectPriceExcel.isPending ? (
+                    <>
+                      <Spinner className="text-indigo-600" />
+                      <span className="text-sm text-slate-500">กำลังอ่านไฟล์…</span>
+                    </>
+                  ) : (
+                    <>
+                      <Upload size={32} className="text-slate-400" />
+                      <span className="text-sm font-medium text-slate-700">
+                        คลิกเพื่ออัปโหลดไฟล์ Excel ที่ export มาแล้ว (.xlsx)
+                      </span>
+                      <span className="text-xs text-slate-400">
+                        ไม่จำเป็นต้องใช้ข้อมูลราคาของบ้านนี้ — อัปโหลดไฟล์ใหม่ได้เลย
+                      </span>
+                    </>
+                  )}
+                </label>
+                {priceExcelFile && (
+                  <p className="flex items-center gap-2 text-sm text-slate-600">
+                    ไฟล์: <strong>{priceExcelFile.name}</strong>
+                    <button
+                      type="button"
+                      onClick={clearPriceExcelFile}
+                      className="inline-flex items-center gap-1 text-xs font-medium text-red-600 hover:text-red-700"
+                    >
+                      <Trash2 size={13} /> ลบไฟล์
+                    </button>
+                  </p>
+                )}
+                {priceExcelSheetNames.length > 0 && (
+                  <Field label="Sheet">
+                    <Select value={priceExcelSheetName} onChange={(e) => setPriceExcelSheetName(e.target.value)}>
+                      {priceExcelSheetNames.map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                )}
+              </div>
+            )}
+          </Card>
+
+          {priceMode === "house" && house.isLoading && (
             <div className="flex items-center gap-2 text-sm text-slate-500">
               <Spinner /> กำลังโหลด...
             </div>
           )}
-          {house.data && (house.data.mapping_rows.length ?? 0) === 0 && (
+          {priceMode === "house" && house.data && (house.data.mapping_rows.length ?? 0) === 0 && (
             <Alert tone="warning">บ้านนี้ยังไม่มีข้อมูลราคาที่คำนวณไว้ — ทำขั้นตอน &quot;คำนวณราคา&quot; ให้เสร็จก่อน</Alert>
           )}
           {pricePreview.isLoading && (
@@ -670,6 +805,7 @@ export default function ContractPage() {
                     grandTotal={totals.grandTotal}
                     grandTotalNote={grandTotalNote}
                     remarks={remarks}
+                    hasFixedLabels={pricePreview.data?.has_fixed_labels}
                   />
                 </div>
               </Card>

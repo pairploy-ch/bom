@@ -354,12 +354,24 @@ export const api = {
 
   downloadContractPdf: (
     houseId: string,
-    payload: { rows: QuotationRow[]; deposit_deduction: number; remarks: string; grand_total_note: string }
+    payload: {
+      rows: QuotationRow[];
+      deposit_deduction: number;
+      remarks: string;
+      grand_total_note: string;
+      has_fixed_labels?: boolean;
+    }
   ) => requestBlob(`/houses/${houseId}/contract/pdf`, json(payload)),
 
   downloadContractDocx: (
     houseId: string,
-    payload: { rows: QuotationRow[]; deposit_deduction: number; remarks: string; grand_total_note: string }
+    payload: {
+      rows: QuotationRow[];
+      deposit_deduction: number;
+      remarks: string;
+      grand_total_note: string;
+      has_fixed_labels?: boolean;
+    }
   ) => requestBlob(`/houses/${houseId}/contract/docx`, json(payload)),
 
   // ------------------------------------------------------------- profile --

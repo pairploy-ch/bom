@@ -376,7 +376,7 @@ def download_contract_pdf(house_id: str, body: ContractPdfRequest):
     row = _get_house_or_404(house_id)
     details = json.loads(row["contract_details"]) if row["contract_details"] else {}
     attachments = db.get_contract_attachments_full(house_id)
-    rows = _rows_with_fresh_labels(body.rows)
+    rows = _rows_with_fresh_labels(body.rows, body.has_fixed_labels)
     pdf_bytes = generate_contract_pdf(
         details,
         attachments,
@@ -397,7 +397,7 @@ def download_contract_docx(house_id: str, body: ContractPdfRequest):
     row = _get_house_or_404(house_id)
     details = json.loads(row["contract_details"]) if row["contract_details"] else {}
     attachments = db.get_contract_attachments_full(house_id)
-    rows = _rows_with_fresh_labels(body.rows)
+    rows = _rows_with_fresh_labels(body.rows, body.has_fixed_labels)
     docx_bytes = generate_contract_docx(
         details,
         attachments,

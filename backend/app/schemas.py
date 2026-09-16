@@ -421,3 +421,7 @@ class ContractPdfRequest(BaseModel):
     deposit_deduction: float = 0
     remarks: str = ""
     grand_total_note: str = "(ไม่รวมรายการ TBC ค่าขนส่ง, ค่าประกอบและค่าติดตั้ง)"
+    # Mirrors QuotationPdfRequest.has_fixed_labels — set when `rows` came
+    # from the Excel-upload price source, so _rows_with_fresh_labels must
+    # not overwrite the source file's own item numbers.
+    has_fixed_labels: bool = False
