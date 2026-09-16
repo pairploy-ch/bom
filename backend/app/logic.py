@@ -1318,6 +1318,8 @@ _QUOTATION_CLIENT_ROW_BG = "#e5e7eb"
 # Rows priced under the purchase column (lettered labels A, B, C, ...) — 30%
 # gray, per client request, to set them apart from the numbered rows.
 _QUOTATION_LETTER_ROW_BG = "#b3b3b3"
+# Grand Total row, highlighted yellow per the reference template.
+_QUOTATION_GRAND_TOTAL_BG = "#ffff99"
 
 
 def _fmt_money(v: float | None) -> str:
@@ -1451,6 +1453,14 @@ def _build_quotation_table_story(
 
     dk_work_subtotal = 0.0
     purchase_subtotal = 0.0
+    # Item-label ranges for the "รวมงบประมาณ ... (รายการที่ X-Y)" summary
+    # lines after the totals table — same priced-option/non-client filter
+    # as dk_work_subtotal/purchase_subtotal, collected in appearance order
+    # (assign_quotation_labels' numeric/lettered sequences are assigned in
+    # that same order, so first-seen..last-seen is a correct "X-Y" range
+    # even though the two sequences interleave row by row).
+    numeric_labels: list[str] = []
+    letter_labels: list[str] = []
     last_floor: str | None = None
     for floor, room in groups_order:
         if floor and floor != last_floor:
@@ -1481,6 +1491,8 @@ def _build_quotation_table_story(
                 # 10DK's-work price -> priced under the purchase column.
                 if price is None:
                     letter_row_indices.append(len(table_data))
+                if _is_priced_option(str(row.get("item_name") or "")):
+                    (numeric_labels if price is not None else letter_labels).append(str(row.get("label", "")))
             qty = row.get("quantity")
             table_data.append([
                 Paragraph(esc(row.get("label", "")), body_style),
@@ -1556,16 +1568,46 @@ def _build_quotation_table_story(
         *[("SPAN", (0, i), (2, i)) for i in range(len(totals_data))],
         ("GRID", (0, 0), (-1, -1), 0.75, colors.HexColor(_QUOTATION_GRID_COLOR)),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(_QUOTATION_LETTER_ROW_BG)),
+        ("BACKGROUND", (0, grand_total_row_idx), (-1, grand_total_row_idx), colors.HexColor(_QUOTATION_GRAND_TOTAL_BG)),
         ("TOPPADDING", (0, 0), (-1, -1), 3),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ("LINEABOVE", (1, grand_total_row_idx), (-1, grand_total_row_idx), 0.75, colors.HexColor(_QUOTATION_GRID_COLOR)),
     ]))
     story.append(totals_table)
 
+    # "รวมงบประมาณ ... (รายการที่ X-Y) = ... บาท" summary lines, one per
+    # priced column that actually has rows — the item range is simply
+    # first-seen..last-seen label within that column's filtered rows (see
+    # numeric_labels/letter_labels above).
+    def label_range(labels: list[str]) -> str:
+        if not labels:
+            return ""
+        return labels[0] if labels[0] == labels[-1] else f"{labels[0]}-{labels[-1]}"
+
+    summary_lines: list[str] = []
+    dk_range = label_range(numeric_labels)
+    if dk_range:
+        deduction_phrase = "หลังหักมัดจำค่าออกแบบ " if deposit_deduction else ""
+        summary_lines.append(
+            f'รวมงบประมาณ "ในส่วนงานของ 10DK" (รายการที่ {dk_range}) '
+            f"{deduction_phrase}= {_fmt_money(grand_total)} บาท"
+        )
+    purchase_range = label_range(letter_labels)
+    if purchase_range:
+        note_suffix = f" {grand_total_note}" if grand_total_note else ""
+        summary_lines.append(
+            f'รวมงบประมาณ "งานจัดซื้อ เบิกจ่ายตามราคาจริง" (รายการที่ {purchase_range}) '
+            f"= {_fmt_money(purchase_subtotal)} บาท{note_suffix}"
+        )
+    if summary_lines:
+        story.append(Spacer(1, 5 * mm))
+        for line in summary_lines:
+            story.append(Paragraph(esc(line), body_style))
+
     remark_lines = [line.strip() for line in (remarks or "").splitlines() if line.strip()]
     if remark_lines:
         story.append(Spacer(1, 6 * mm))
-        story.append(Paragraph("<u>Remarks:</u>", remarks_heading_style))
+        story.append(Paragraph("<u>หมายเหตุ</u>", remarks_heading_style))
         for line in remark_lines:
             bits = "".join(
                 f"<b><u>{esc(text)}</u></b>" if emph else esc(text)
@@ -2129,6 +2171,10 @@ def _add_quotation_table_to_docx(
 
     dk_work_subtotal = 0.0
     purchase_subtotal = 0.0
+    # See _build_quotation_table_story's identical comment — these feed the
+    # "รวมงบประมาณ ... (รายการที่ X-Y)" summary lines below the totals table.
+    numeric_labels: list[str] = []
+    letter_labels: list[str] = []
     last_floor: str | None = None
     for floor, room in groups_order:
         if floor and floor != last_floor:
@@ -2150,6 +2196,8 @@ def _add_quotation_table_to_docx(
             else:
                 price_cell = _fmt_money(price)
                 purchase_cell = _fmt_money(purchase) if (price or purchase) else "TBC"
+                if _is_priced_option(str(row.get("item_name") or "")):
+                    (numeric_labels if price is not None else letter_labels).append(str(row.get("label", "")))
 
             cells = table.add_row().cells
             _set_row_widths(cells)
@@ -2229,12 +2277,43 @@ def _add_quotation_table_to_docx(
         if i == grand_total_row_idx:
             for c in (label_cell, row_cells[3], row_cells[4], row_cells[5]):
                 _set_cell_top_border(c, _QUOTATION_GRID_COLOR.lstrip("#"))
+                _set_cell_background(c, _QUOTATION_GRAND_TOTAL_BG.lstrip("#"))
+
+    # "รวมงบประมาณ ... (รายการที่ X-Y) = ... บาท" summary lines — see
+    # _build_quotation_table_story's identical block for the rationale.
+    def label_range(labels: list[str]) -> str:
+        if not labels:
+            return ""
+        return labels[0] if labels[0] == labels[-1] else f"{labels[0]}-{labels[-1]}"
+
+    summary_lines: list[str] = []
+    dk_range = label_range(numeric_labels)
+    if dk_range:
+        deduction_phrase = "หลังหักมัดจำค่าออกแบบ " if deposit_deduction else ""
+        summary_lines.append(
+            f'รวมงบประมาณ "ในส่วนงานของ 10DK" (รายการที่ {dk_range}) '
+            f"{deduction_phrase}= {_fmt_money(grand_total)} บาท"
+        )
+    purchase_range = label_range(letter_labels)
+    if purchase_range:
+        note_suffix = f" {grand_total_note}" if grand_total_note else ""
+        summary_lines.append(
+            f'รวมงบประมาณ "งานจัดซื้อ เบิกจ่ายตามราคาจริง" (รายการที่ {purchase_range}) '
+            f"= {_fmt_money(purchase_subtotal)} บาท{note_suffix}"
+        )
+    if summary_lines:
+        doc.add_paragraph()
+        for line in summary_lines:
+            p = doc.add_paragraph()
+            run = p.add_run(line)
+            run.font.name = _DOCX_FONT
+            run.font.size = Pt(13)
 
     remark_lines = [line.strip() for line in (remarks or "").splitlines() if line.strip()]
     if remark_lines:
         doc.add_paragraph()
         heading_para = doc.add_paragraph()
-        heading_run = heading_para.add_run("Remarks:")
+        heading_run = heading_para.add_run("หมายเหตุ")
         heading_run.bold = True
         heading_run.underline = True
         heading_run.font.name = _DOCX_FONT_BOLD
