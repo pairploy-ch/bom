@@ -1,38 +1,59 @@
 "use client";
 
-import { ArrowUpRight, Circle, Eraser, ImageOff, Pencil, Trash2, Type, Undo2, X as XIcon } from "lucide-react";
+import {
+  ArrowUpRight,
+  Circle,
+  Eraser,
+  ImageOff,
+  Pencil,
+  Square,
+  Trash2,
+  Type,
+  Undo2,
+  X as XIcon,
+} from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Button, cn } from "@/components/ui/primitives";
 
 // One "เอกสารแนบ" page: paste a screenshot from the clipboard as the
-// background, then mark it up — freehand pen, a กากบาท (X) / circle / arrow
-// shape stamp (drag to size), a text box, or a spot eraser to remove just
-// one mark — all in red to match the reference contract template's own
-// X-marks-over-excluded-items convention. Deliberately NOT a general design
-// tool (no Fabric.js/Konva) — plain <canvas> + pointer events covers
+// background, then mark it up — freehand pen, a กากบาท (X) / circle /
+// rectangle / arrow shape stamp (drag to size), a text box, or a spot eraser
+// to remove just one mark — in either red (to match the reference contract
+// template's own X-marks-over-excluded-items convention) or white (for dark
+// photo backgrounds red doesn't show up against). Deliberately NOT a general
+// design tool (no Fabric.js/Konva) — plain <canvas> + pointer events covers
 // everything this tab actually needs.
 export interface AttachmentCanvasHandle {
   toBlob: () => Promise<Blob | null>;
   isEmpty: () => boolean;
 }
 
-type Tool = "pen" | "cross" | "circle" | "arrow" | "text" | "eraser";
+type Tool = "pen" | "cross" | "circle" | "rect" | "arrow" | "text" | "eraser";
 
 interface Point {
   x: number;
   y: number;
 }
 
+// Every annotation carries its own `color`, fixed at the moment it was
+// drawn — switching the active color afterwards only affects new marks, not
+// ones already on the page.
 type Annotation =
-  | { kind: "pen"; points: Point[] }
-  | { kind: "cross"; x1: number; y1: number; x2: number; y2: number }
-  | { kind: "circle"; x1: number; y1: number; x2: number; y2: number }
-  | { kind: "arrow"; x1: number; y1: number; x2: number; y2: number }
-  | { kind: "text"; x: number; y: number; text: string };
+  | { kind: "pen"; points: Point[]; color: string }
+  | { kind: "cross"; x1: number; y1: number; x2: number; y2: number; color: string }
+  | { kind: "circle"; x1: number; y1: number; x2: number; y2: number; color: string }
+  | { kind: "rect"; x1: number; y1: number; x2: number; y2: number; color: string }
+  | { kind: "arrow"; x1: number; y1: number; x2: number; y2: number; color: string }
+  | { kind: "text"; x: number; y: number; text: string; color: string };
 
 // The text tool never goes through the drag-to-draw path (see
 // handlePointerDown) — the in-progress "draft" shape is always one of these.
-type DraggableAnnotation = Extract<Annotation, { kind: "pen" | "cross" | "circle" | "arrow" }>;
+type DraggableAnnotation = Extract<Annotation, { kind: "pen" | "cross" | "circle" | "rect" | "arrow" }>;
+
+const STROKE_COLORS = [
+  { value: "#dc2626", label: "แดง" },
+  { value: "#ffffff", label: "ขาว" },
+];
 
 // Starting size only — the frame itself is freely resizable by dragging its
 // bottom-right corner (see the resize handle), so these are just what a
@@ -50,7 +71,7 @@ const MAX_CANVAS_HEIGHT = 3200;
 // single-image default height.
 const TWO_IMAGE_MIN_HEIGHT = 1000;
 
-const STROKE_COLOR = "#dc2626";
+const DEFAULT_STROKE_COLOR = STROKE_COLORS[0].value;
 const TEXT_FONT_SIZE = 13;
 // How close a click/drag point needs to be to an annotation's line/edge to
 // erase it (canvas-space pixels) — generous enough to hit a thin pen stroke
@@ -62,6 +83,12 @@ const ERASE_RADIUS = 16;
 const MIN_SPLIT_RATIO = 0.15;
 const MAX_SPLIT_RATIO = 0.85;
 
+// In 2-image layout, how narrow either slot's own image box can be dragged
+// relative to the full frame width — the two don't have to match each
+// other, each has its own independent ratio.
+const MIN_SLOT_WIDTH_RATIO = 0.25;
+const MAX_SLOT_WIDTH_RATIO = 1;
+
 function clamp(v: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, v));
 }
@@ -70,6 +97,7 @@ const TOOLS: { key: Tool; label: string; icon: typeof Pencil }[] = [
   { key: "pen", label: "ปากกา", icon: Pencil },
   { key: "cross", label: "กากบาท", icon: XIcon },
   { key: "circle", label: "วงกลม", icon: Circle },
+  { key: "rect", label: "สี่เหลี่ยม", icon: Square },
   { key: "arrow", label: "ลูกศร", icon: ArrowUpRight },
   { key: "text", label: "ข้อความ", icon: Type },
   { key: "eraser", label: "ยางลบ", icon: Eraser },
@@ -117,13 +145,29 @@ function hitTestAnnotation(a: Annotation, p: Point, ctx: CanvasRenderingContext2
     const normDist = Math.hypot((p.x - cx) / rx, (p.y - cy) / ry);
     return Math.abs(normDist - 1) * ((rx + ry) / 2) <= ERASE_RADIUS;
   }
+  if (a.kind === "rect") {
+    const corners = [
+      { x: a.x1, y: a.y1 },
+      { x: a.x2, y: a.y1 },
+      { x: a.x2, y: a.y2 },
+      { x: a.x1, y: a.y2 },
+    ];
+    for (let i = 0; i < 4; i++) {
+      if (distanceToSegment(p, corners[i], corners[(i + 1) % 4]) <= ERASE_RADIUS) return true;
+    }
+    return false;
+  }
   // text
   const width = ctx ? ctx.measureText(a.text).width : a.text.length * TEXT_FONT_SIZE * 0.55;
   const height = TEXT_FONT_SIZE * 1.2;
   return p.x >= a.x - 4 && p.x <= a.x + width + 4 && p.y >= a.y - 4 && p.y <= a.y + height + 4;
 }
 
-function drawShape(ctx: CanvasRenderingContext2D, a: Extract<Annotation, { kind: "cross" | "circle" | "arrow" }>) {
+// Caller sets ctx.strokeStyle/fillStyle to the annotation's own `color`
+// before calling this (see redraw's drawOne) — kept out of here since the
+// text-drawing path (in redraw, not this function) needs the same color set
+// on ctx too.
+function drawShape(ctx: CanvasRenderingContext2D, a: Extract<Annotation, { kind: "cross" | "circle" | "rect" | "arrow" }>) {
   const { kind, x1, y1, x2, y2 } = a;
   if (kind === "cross") {
     ctx.beginPath();
@@ -144,6 +188,10 @@ function drawShape(ctx: CanvasRenderingContext2D, a: Extract<Annotation, { kind:
     ctx.stroke();
     return;
   }
+  if (kind === "rect") {
+    ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+    return;
+  }
   // arrow
   ctx.beginPath();
   ctx.moveTo(x1, y1);
@@ -156,7 +204,6 @@ function drawShape(ctx: CanvasRenderingContext2D, a: Extract<Annotation, { kind:
   ctx.lineTo(x2 - headLen * Math.cos(angle - Math.PI / 6), y2 - headLen * Math.sin(angle - Math.PI / 6));
   ctx.lineTo(x2 - headLen * Math.cos(angle + Math.PI / 6), y2 - headLen * Math.sin(angle + Math.PI / 6));
   ctx.closePath();
-  ctx.fillStyle = STROKE_COLOR;
   ctx.fill();
 }
 
@@ -165,7 +212,7 @@ function drawShape(ctx: CanvasRenderingContext2D, a: Extract<Annotation, { kind:
 // layout) so existing marks stay in the same relative spot on the image
 // instead of keeping their old absolute pixel position.
 function scaleAnnotation(a: Annotation, sx: number, sy: number): Annotation {
-  if (a.kind === "pen") return { kind: "pen", points: a.points.map((p) => ({ x: p.x * sx, y: p.y * sy })) };
+  if (a.kind === "pen") return { ...a, points: a.points.map((p) => ({ x: p.x * sx, y: p.y * sy })) };
   if (a.kind === "text") return { ...a, x: a.x * sx, y: a.y * sy };
   return { ...a, x1: a.x1 * sx, y1: a.y1 * sy, x2: a.x2 * sx, y2: a.y2 * sy };
 }
@@ -206,6 +253,13 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
     // stays fixed and only how it's divided between the two photos changes.
     const [splitRatio, setSplitRatio] = useState(0.5);
     const resizingSplitRef = useRef(false);
+    // Each slot's own image-box width as a fraction of the full frame width
+    // (independent of the other slot's — the top image can be narrower than
+    // the bottom one or vice versa). Always centered horizontally within
+    // the frame. Index 0 is unused/ignored in 1-image layout (that slot
+    // always spans the full width).
+    const [slotWidthRatios, setSlotWidthRatios] = useState<[number, number]>([1, 1]);
+    const slotWidthResizeRef = useRef<number | null>(null);
     // The frame's own width/height — no longer a fixed constant, since it's
     // now resizable by dragging its bottom-right corner (see the resize
     // handle / handleFrameResize*). Drag state (start point + a snapshot of
@@ -220,6 +274,7 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       baseAnnotations: Annotation[];
     } | null>(null);
     const [tool, setTool] = useState<Tool>("pen");
+    const [strokeColor, setStrokeColor] = useState(DEFAULT_STROKE_COLOR);
     const [textEditor, setTextEditor] = useState<{ cssX: number; cssY: number; canvasX: number; canvasY: number; value: string } | null>(null);
 
     useEffect(() => {
@@ -245,20 +300,32 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       imageSlotsRef.current.forEach((img, i) => {
         if (!img) return;
         const { y: slotY, h: slotHeight } = slotBounds[i];
+        // Each slot's own box width, centered — only meaningful in 2-image
+        // layout (layout 1's single slot always spans the full width).
+        const widthRatio = layout === 2 ? slotWidthRatios[i] : 1;
+        const boxWidth = canvas.width * widthRatio;
+        const boxX = (canvas.width - boxWidth) / 2;
         // "cover" fit within this slot's box — scale up to fill it and crop
         // the overflow, instead of "contain" (which left white bars around
         // any pasted image whose aspect ratio didn't match the box). Clipped
         // to the slot's own rect so an oversized image can't bleed into the
-        // other slot.
-        const scale = Math.max(canvas.width / img.width, slotHeight / img.height);
+        // other slot or outside a narrowed box.
+        const scale = Math.max(boxWidth / img.width, slotHeight / img.height);
         const w = img.width * scale;
         const h = img.height * scale;
         ctx.save();
         ctx.beginPath();
-        ctx.rect(0, slotY, canvas.width, slotHeight);
+        ctx.rect(boxX, slotY, boxWidth, slotHeight);
         ctx.clip();
-        ctx.drawImage(img, (canvas.width - w) / 2, slotY + (slotHeight - h) / 2, w, h);
+        ctx.drawImage(img, boxX + (boxWidth - w) / 2, slotY + (slotHeight - h) / 2, w, h);
         ctx.restore();
+        if (layout === 2 && widthRatio < 1) {
+          ctx.save();
+          ctx.strokeStyle = "#cbd5e1";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(boxX, slotY, boxWidth, slotHeight);
+          ctx.restore();
+        }
       });
       if (layout === 2) {
         ctx.save();
@@ -271,8 +338,6 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
         ctx.restore();
       }
 
-      ctx.strokeStyle = STROKE_COLOR;
-      ctx.fillStyle = STROKE_COLOR;
       ctx.lineWidth = 3;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -280,6 +345,8 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       ctx.textBaseline = "top";
 
       const drawOne = (a: Annotation) => {
+        ctx.strokeStyle = a.color;
+        ctx.fillStyle = a.color;
         if (a.kind === "pen") {
           if (a.points.length < 2) return;
           ctx.beginPath();
@@ -404,7 +471,7 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
     useEffect(() => {
       redraw();
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [layout, splitRatio, canvasSize]);
+    }, [layout, splitRatio, canvasSize, slotWidthRatios]);
 
     useImperativeHandle(
       ref,
@@ -436,7 +503,7 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       setTextEditor((cur) => {
         const value = cur?.value.trim();
         if (cur && value) {
-          annotationsRef.current.push({ kind: "text", x: cur.canvasX, y: cur.canvasY, text: value });
+          annotationsRef.current.push({ kind: "text", x: cur.canvasX, y: cur.canvasY, text: value, color: strokeColor });
           redraw();
         }
         return null;
@@ -504,7 +571,10 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       }
       const pos = posFromEvent(e);
       drawingRef.current = true;
-      draftRef.current = tool === "pen" ? { kind: "pen", points: [pos] } : { kind: tool, x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y };
+      draftRef.current =
+        tool === "pen"
+          ? { kind: "pen", points: [pos], color: strokeColor }
+          : { kind: tool, x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y, color: strokeColor };
       e.currentTarget.setPointerCapture(e.pointerId);
       redraw();
     };
@@ -589,6 +659,34 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       e.currentTarget.releasePointerCapture(e.pointerId);
     };
 
+    // Dragging a slot's own width handle (its box's right edge) resizes
+    // just that slot — the box always stays centered, so the ratio is
+    // derived directly from how far the pointer is from the frame's
+    // horizontal center, not from an incremental delta.
+    const handleSlotWidthPointerDown = (index: number) => (e: React.PointerEvent<HTMLDivElement>) => {
+      slotWidthResizeRef.current = index;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    };
+
+    const handleSlotWidthPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+      const index = slotWidthResizeRef.current;
+      if (index === null || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const halfWidthRatio = Math.abs((e.clientX - rect.left) / rect.width - 0.5);
+      const ratio = clamp(halfWidthRatio * 2, MIN_SLOT_WIDTH_RATIO, MAX_SLOT_WIDTH_RATIO);
+      setSlotWidthRatios((cur) => {
+        const next: [number, number] = [...cur];
+        next[index] = ratio;
+        return next;
+      });
+    };
+
+    const handleSlotWidthPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+      slotWidthResizeRef.current = null;
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    };
+
     return (
       <div>
         <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -614,6 +712,22 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
                 </button>
               );
             })}
+          </div>
+          <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1.5">
+            {STROKE_COLORS.map((c) => (
+              <button
+                key={c.value}
+                type="button"
+                title={c.label}
+                aria-label={c.label}
+                onClick={() => setStrokeColor(c.value)}
+                style={{ backgroundColor: c.value }}
+                className={cn(
+                  "h-5 w-5 rounded-full border-2 transition-colors",
+                  strokeColor === c.value ? "border-[var(--accent)]" : "border-slate-300"
+                )}
+              />
+            ))}
           </div>
           <Button variant="secondary" onClick={handleUndo}>
             <Undo2 size={14} /> ยกเลิกล่าสุด
@@ -681,7 +795,7 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
             onPointerMove={handleFrameResizeMove}
             onPointerUp={handleFrameResizeUp}
             title="ลากเพื่อปรับขนาดกรอบ (กว้าง/สูง)"
-            className="absolute bottom-0 right-0 z-20 h-6 w-6 cursor-nwse-resize touch-none rounded-tl-md bg-[var(--accent)]/70 hover:bg-[var(--accent)]"
+            className="absolute bottom-0 right-0 z-30 h-6 w-6 cursor-nwse-resize touch-none rounded-tl-md bg-[var(--accent)]/70 hover:bg-[var(--accent)]"
           />
           {layout === 2 && (
             <div
@@ -695,6 +809,25 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
               <div className="mx-auto mt-1.5 h-1 w-16 rounded-full bg-[var(--accent)]/70" />
             </div>
           )}
+          {layout === 2 &&
+            ([0, 1] as const).map((i) => {
+              const slotTop = i === 0 ? 0 : splitRatio * 100;
+              const slotHeight = i === 0 ? splitRatio * 100 : (1 - splitRatio) * 100;
+              const rightEdgePct = (1 + slotWidthRatios[i]) / 2 * 100;
+              return (
+                <div
+                  key={i}
+                  onPointerDown={handleSlotWidthPointerDown(i)}
+                  onPointerMove={handleSlotWidthPointerMove}
+                  onPointerUp={handleSlotWidthPointerUp}
+                  style={{ left: `${rightEdgePct}%`, top: `${slotTop}%`, height: `${slotHeight}%` }}
+                  className="absolute z-20 -ml-2 flex w-4 cursor-col-resize touch-none items-center justify-center"
+                  title={i === 0 ? "ลากเพื่อปรับความกว้างรูปบน" : "ลากเพื่อปรับความกว้างรูปล่าง"}
+                >
+                  <div className="h-4 w-1 rounded-full bg-[var(--accent)]/70" />
+                </div>
+              );
+            })}
           {Array.from({ length: layout }, (_, i) => i)
             .filter((i) => !filledSlots[i])
             .map((i) => {
@@ -724,8 +857,20 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
                 if (e.key === "Escape") setTextEditor(null);
               }}
               placeholder="พิมพ์ข้อความ..."
-              style={{ left: textEditor.cssX, top: textEditor.cssY, fontFamily: fontFamilyRef.current }}
-              className="absolute z-10 min-w-[140px] -translate-y-1 rounded border border-[var(--accent)] bg-white/95 px-1.5 py-0.5 text-base text-[#dc2626] shadow outline-none"
+              style={{
+                left: textEditor.cssX,
+                top: textEditor.cssY,
+                fontFamily: fontFamilyRef.current,
+                color: strokeColor,
+                // A white-on-white input would be unreadable while typing —
+                // give it a dark backing instead whenever the active color
+                // is too light to read against the usual white/95 one.
+                backgroundColor: strokeColor === "#ffffff" ? "rgba(30, 41, 59, 0.9)" : undefined,
+              }}
+              className={cn(
+                "absolute z-10 min-w-[140px] -translate-y-1 rounded border border-[var(--accent)] px-1.5 py-0.5 text-base shadow outline-none",
+                strokeColor === "#ffffff" ? "" : "bg-white/95"
+              )}
             />
           )}
         </div>
