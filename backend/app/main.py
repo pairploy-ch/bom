@@ -15,7 +15,7 @@ import json
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
@@ -326,16 +326,23 @@ def get_contract_attachments(house_id: str):
 
 
 @app.put("/api/houses/{house_id}/contract/attachments", response_model=list[ContractAttachmentMeta])
-async def upload_contract_attachments(
-    house_id: str, files: list[UploadFile] = File(default=[]), pages: str = Form(default="[]")
-):
+async def upload_contract_attachments(house_id: str, request: Request):
     """Replaces the full ordered set of attachment pages in one call — the
     frontend flattens each canvas page to a PNG and re-sends the whole list
     every save, matching replace_contract_attachments' delete-then-bulk-
     insert semantics (simplest correct way to handle reordering/deletes).
     `pages` is a JSON-encoded array of ContractAttachmentUpload objects
-    (title + remark metadata), one per file, zipped by index."""
+    (title + remark metadata), one per file, zipped by index.
+
+    Parsed via request.form() with a raised max_part_size instead of
+    File()/Form() parameters: Starlette's multipart parser hardcodes a 1MB
+    cap on non-file fields, and `pages` now embeds each page's editor_state
+    (base64 slot images for re-editing) which easily exceeds that for a
+    2-image page, causing a 400 "Part exceeded maximum size" error."""
     _get_house_or_404(house_id)
+    form = await request.form(max_part_size=25 * 1024 * 1024)
+    pages = form.get("pages", "[]")
+    files = form.getlist("files")
     try:
         raw_pages = json.loads(pages)
         page_list = [ContractAttachmentUpload(**p) for p in raw_pages]
