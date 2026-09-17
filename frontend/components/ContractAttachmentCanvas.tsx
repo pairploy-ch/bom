@@ -106,6 +106,11 @@ const ERASE_RADIUS = 16;
 const MIN_SPLIT_RATIO = 0.15;
 const MAX_SPLIT_RATIO = 0.85;
 
+// In 2-image layout, a fixed blank gap (canvas px) between the top and
+// bottom image boxes, carved out of each slot's height on either side of
+// the split — so the two photos never touch.
+const SLOT_GAP_PX = 20;
+
 // In 2-image layout, how narrow either slot's own image box can be dragged
 // relative to the full frame width — the two don't have to match each
 // other, each has its own independent ratio.
@@ -348,9 +353,10 @@ export const ContractAttachmentCanvas = forwardRef<
       // stacked top/bottom, split at splitRatio (total height stays fixed —
       // dragging the divider only changes how it's divided between them).
       const splitY = layout === 2 ? canvas.height * splitRatio : canvas.height;
+      const halfGap = layout === 2 ? Math.min(SLOT_GAP_PX / 2, splitY / 2, (canvas.height - splitY) / 2) : 0;
       const slotBounds = layout === 2 ? [
-        { y: 0, h: splitY },
-        { y: splitY, h: canvas.height - splitY },
+        { y: 0, h: splitY - halfGap },
+        { y: splitY + halfGap, h: canvas.height - splitY - halfGap },
       ] : [{ y: 0, h: canvas.height }];
       imageSlotsRef.current.forEach((img, i) => {
         if (!img) return;
@@ -374,25 +380,7 @@ export const ContractAttachmentCanvas = forwardRef<
         ctx.clip();
         ctx.drawImage(img, boxX + (boxWidth - w) / 2, slotY + (slotHeight - h) / 2, w, h);
         ctx.restore();
-        if (layout === 2 && widthRatio < 1) {
-          ctx.save();
-          ctx.strokeStyle = "#cbd5e1";
-          ctx.lineWidth = 1;
-          ctx.strokeRect(boxX, slotY, boxWidth, slotHeight);
-          ctx.restore();
-        }
       });
-      if (layout === 2) {
-        ctx.save();
-        ctx.strokeStyle = "#cbd5e1";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(0, splitY);
-        ctx.lineTo(canvas.width, splitY);
-        ctx.stroke();
-        ctx.restore();
-      }
-
       ctx.lineWidth = 3;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -941,8 +929,9 @@ export const ContractAttachmentCanvas = forwardRef<
           )}
           {layout === 2 &&
             ([0, 1] as const).map((i) => {
-              const slotTop = i === 0 ? 0 : splitRatio * 100;
-              const slotHeight = i === 0 ? splitRatio * 100 : (1 - splitRatio) * 100;
+              const halfGapPct = (Math.min(SLOT_GAP_PX / 2, (canvasSize.h * splitRatio) / 2, (canvasSize.h * (1 - splitRatio)) / 2) / canvasSize.h) * 100;
+              const slotTop = i === 0 ? 0 : splitRatio * 100 + halfGapPct;
+              const slotHeight = i === 0 ? splitRatio * 100 - halfGapPct : (1 - splitRatio) * 100 - halfGapPct;
               const rightEdgePct = (1 + slotWidthRatios[i]) / 2 * 100;
               return (
                 <div
