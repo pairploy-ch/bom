@@ -357,6 +357,7 @@ async def upload_contract_attachments(
             "zone": page.zone,
             "item_range": page.item_range,
             "reference_note": page.reference_note,
+            "editor_state": page.editor_state,
         })
     db.replace_contract_attachments(house_id, items)
     return db.get_contract_attachments_meta(house_id)

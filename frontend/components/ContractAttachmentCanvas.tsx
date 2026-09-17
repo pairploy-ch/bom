@@ -26,6 +26,29 @@ import { Button, cn } from "@/components/ui/primitives";
 export interface AttachmentCanvasHandle {
   toBlob: () => Promise<Blob | null>;
   isEmpty: () => boolean;
+  // JSON-serializable layout/crop/annotation state, or null if the page is
+  // empty — save this alongside the flattened toBlob() PNG so the page can
+  // be reopened for further editing exactly as it was left (see
+  // EditorState below and initialEditorState).
+  getEditorState: () => string | null;
+}
+
+// Everything needed to reconstruct the canvas's editable state — separate
+// from the flattened PNG the backend actually renders into the contract
+// (that's just a raster; this is what lets re-splitting/re-cropping/
+// re-annotating still work after a reload instead of starting over from
+// one merged image). Versioned in case the shape needs to change later.
+interface EditorState {
+  v: 1;
+  layout: 1 | 2;
+  splitRatio: number;
+  slotWidthRatios: [number, number];
+  canvasSize: { w: number; h: number };
+  annotations: Annotation[];
+  // Each filled slot's own source image as a data URL (null for an empty
+  // slot) — kept separate per slot specifically so 2-image pages stay
+  // independently re-croppable/resizable after a reload.
+  slotImages: (string | null)[];
 }
 
 type Tool = "pen" | "cross" | "circle" | "rect" | "arrow" | "text" | "eraser";
@@ -220,6 +243,19 @@ function drawShape(ctx: CanvasRenderingContext2D, a: Extract<Annotation, { kind:
   ctx.fill();
 }
 
+// Re-rasterizes a loaded <img> (blob: URL for a freshly pasted image, or a
+// cross-origin backend URL for a previously-saved one) into a data URL so it
+// can be embedded directly in the saved editor state — a plain <img src>
+// pointing at a blob: URL wouldn't survive a reload (the blob is gone), and
+// re-fetching the backend URL later is an extra round trip this avoids.
+function imageToDataUrl(img: HTMLImageElement): string {
+  const c = document.createElement("canvas");
+  c.width = img.naturalWidth || img.width;
+  c.height = img.naturalHeight || img.height;
+  c.getContext("2d")!.drawImage(img, 0, 0);
+  return c.toDataURL("image/png");
+}
+
 // Remaps an annotation's coordinates by (sx, sy) — used when the frame is
 // resized (drag-corner or the auto height bump on switching to 2-image
 // layout) so existing marks stay in the same relative spot on the image
@@ -230,8 +266,11 @@ function scaleAnnotation(a: Annotation, sx: number, sy: number): Annotation {
   return { ...a, x1: a.x1 * sx, y1: a.y1 * sy, x2: a.x2 * sx, y2: a.y2 * sy };
 }
 
-export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { initialImageUrl?: string | null }>(
-  function ContractAttachmentCanvas({ initialImageUrl }, ref) {
+export const ContractAttachmentCanvas = forwardRef<
+  AttachmentCanvasHandle,
+  { initialImageUrl?: string | null; initialEditorState?: string | null }
+>(
+  function ContractAttachmentCanvas({ initialImageUrl, initialEditorState }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     // 1 slot (the whole frame) or 2 (stacked top/bottom halves) — which
@@ -380,7 +419,7 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       if (draftRef.current) drawOne(draftRef.current);
     };
 
-    const loadImageIntoSlot = (index: number, src: string) => {
+    const loadImageIntoSlot = (index: number, src: string, fitCanvasToImage = false) => {
       const img = new Image();
       // Previously-saved pages load their background from the backend API
       // (a different origin/port than the frontend dev server) — without
@@ -392,6 +431,17 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       img.crossOrigin = "anonymous";
       img.onload = () => {
         imageSlotsRef.current[index] = img;
+        if (fitCanvasToImage) {
+          // A page saved before editor-state existed (no layout/size to
+          // restore) only has its one flattened image — open the frame at
+          // that image's own size instead of the 1000x700 default, or the
+          // "cover" crop in redraw() would crop/squish it to fit a frame
+          // shaped nothing like what it was saved at.
+          setCanvasSize({
+            w: clamp(img.naturalWidth || img.width, MIN_CANVAS_WIDTH, MAX_CANVAS_WIDTH),
+            h: clamp(img.naturalHeight || img.height, MIN_CANVAS_HEIGHT, MAX_CANVAS_HEIGHT),
+          });
+        }
         setFilledSlots((cur) => {
           const next = [...cur];
           next[index] = true;
@@ -473,7 +523,42 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
     };
 
     useEffect(() => {
-      if (initialImageUrl) loadImageIntoSlot(0, initialImageUrl);
+      // A page saved with the editor-state feature restores its full layout
+      // (1 or 2 images, split/width ratios, frame size, annotations) instead
+      // of just the one flattened composite — that flattened PNG is only
+      // ever used as the actual export, not as what reopens here. Falls
+      // back to the old flattened-image-only behavior for any page saved
+      // before this existed (no editor_state stored for it).
+      if (initialEditorState) {
+        try {
+          const parsed = JSON.parse(initialEditorState) as Partial<EditorState>;
+          const restoredLayout = parsed.layout === 2 ? 2 : 1;
+          imageSlotsRef.current = restoredLayout === 2 ? [null, null] : [null];
+          setLayout(restoredLayout);
+          if (typeof parsed.splitRatio === "number") setSplitRatio(parsed.splitRatio);
+          if (Array.isArray(parsed.slotWidthRatios) && parsed.slotWidthRatios.length === 2) {
+            setSlotWidthRatios(parsed.slotWidthRatios as [number, number]);
+          }
+          if (
+            parsed.canvasSize &&
+            typeof parsed.canvasSize.w === "number" &&
+            typeof parsed.canvasSize.h === "number"
+          ) {
+            setCanvasSize(parsed.canvasSize);
+          }
+          if (Array.isArray(parsed.annotations)) annotationsRef.current = parsed.annotations;
+          const slotImages = Array.isArray(parsed.slotImages) ? parsed.slotImages : [];
+          setFilledSlots(slotImages.map((src) => !!src));
+          slotImages.forEach((src, i) => {
+            if (src) loadImageIntoSlot(i, src);
+          });
+          return;
+        } catch {
+          // Malformed/unparseable state — fall through to the plain-image
+          // path below rather than leaving the page blank.
+        }
+      }
+      if (initialImageUrl) loadImageIntoSlot(0, initialImageUrl, true);
       // Runs once per mounted page — a page's saved image never changes out
       // from under it after load.
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -502,8 +587,21 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
             canvas.toBlob((blob) => resolve(blob), "image/png");
           }),
         isEmpty: () => imageSlotsRef.current.every((img) => !img) && annotationsRef.current.length === 0,
+        getEditorState: () => {
+          if (imageSlotsRef.current.every((img) => !img) && annotationsRef.current.length === 0) return null;
+          const state: EditorState = {
+            v: 1,
+            layout,
+            splitRatio,
+            slotWidthRatios,
+            canvasSize,
+            annotations: annotationsRef.current,
+            slotImages: imageSlotsRef.current.map((img) => (img ? imageToDataUrl(img) : null)),
+          };
+          return JSON.stringify(state);
+        },
       }),
-      []
+      [layout, splitRatio, slotWidthRatios, canvasSize]
     );
 
     const posFromEvent = (e: React.PointerEvent<HTMLCanvasElement>) => {

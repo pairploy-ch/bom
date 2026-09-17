@@ -421,6 +421,12 @@ class ContractAttachmentMeta(BaseModel):
     zone: str = ""
     item_range: str = ""
     reference_note: str = ""
+    # Opaque JSON blob from ContractAttachmentCanvas's getEditorState() —
+    # layout/split/crop/annotation state needed to reopen this page for
+    # further editing exactly as it was left, since the uploaded `files`
+    # entry is only the flattened PNG used for the actual PDF/DOCX export.
+    # Backend never parses this, just stores and echoes it back.
+    editor_state: str | None = None
 
 
 class ContractAttachmentUpload(BaseModel):
@@ -433,6 +439,7 @@ class ContractAttachmentUpload(BaseModel):
     zone: str = ""
     item_range: str = ""
     reference_note: str = ""
+    editor_state: str | None = None
 
 
 class ContractPdfRequest(BaseModel):

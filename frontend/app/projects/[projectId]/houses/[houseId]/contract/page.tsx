@@ -59,6 +59,7 @@ interface DraftPage {
   zone: string;
   itemRange: string;
   referenceNote: string;
+  editorState: string | null;
 }
 
 export default function ContractPage() {
@@ -117,6 +118,7 @@ export default function ContractPage() {
         zone: m.zone,
         itemRange: m.item_range,
         referenceNote: m.reference_note,
+        editorState: m.editor_state,
       }))
     );
   }
@@ -150,6 +152,7 @@ export default function ContractPage() {
           zone: "",
           itemRange: "",
           referenceNote: "",
+          editorState: null,
         },
       ];
     });
@@ -180,6 +183,7 @@ export default function ContractPage() {
               zone: p.zone,
               item_range: p.itemRange,
               reference_note: p.referenceNote,
+              editor_state: handle?.getEditorState() ?? null,
             },
             blob,
           });
@@ -807,6 +811,7 @@ export default function ContractPage() {
                     canvasRefs.current[p.key] = el;
                   }}
                   initialImageUrl={p.imageUrl}
+                  initialEditorState={p.editorState}
                 />
               </div>
             </Card>

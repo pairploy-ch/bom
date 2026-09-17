@@ -338,6 +338,11 @@ export interface ContractAttachmentMeta {
   zone: string;
   item_range: string;
   reference_note: string;
+  // Opaque JSON from ContractAttachmentCanvas's getEditorState() — layout/
+  // split/crop/annotation state needed to reopen this page for further
+  // editing exactly as it was left (the saved image itself is only the
+  // flattened PNG used for the actual PDF/DOCX export).
+  editor_state: string | null;
 }
 
 export interface ContractAttachmentUpload {
@@ -347,6 +352,7 @@ export interface ContractAttachmentUpload {
   zone: string;
   item_range: string;
   reference_note: string;
+  editor_state: string | null;
 }
 
 export const BUCKET_LABELS = ["ALT", "P'May", "OTHER_MAKER", "PURCHASE"] as const;

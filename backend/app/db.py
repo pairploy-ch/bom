@@ -226,6 +226,11 @@ def init_db() -> None:
             ALTER TABLE contract_attachments ADD COLUMN IF NOT EXISTS zone TEXT NOT NULL DEFAULT '';
             ALTER TABLE contract_attachments ADD COLUMN IF NOT EXISTS item_range TEXT NOT NULL DEFAULT '';
             ALTER TABLE contract_attachments ADD COLUMN IF NOT EXISTS reference_note TEXT NOT NULL DEFAULT '';
+            -- Opaque JSON blob from the canvas editor's getEditorState() —
+            -- layout/crop/annotation state needed to reopen this page for
+            -- further editing later. image_bytes above stays the flattened
+            -- PNG actually used in the exported PDF/DOCX either way.
+            ALTER TABLE contract_attachments ADD COLUMN IF NOT EXISTS editor_state TEXT;
 
             -- One row per completed export, so a house can be "saved" across many
             -- timestamped versions and any past one re-downloaded later, instead of only
@@ -667,8 +672,8 @@ def get_quotation_pdf_bytes(pdf_id: int) -> tuple[str, bytes] | None:
 def replace_contract_attachments(house_id: str, items: list[dict[str, Any]]) -> None:
     """Replaces all attachment pages for this house — each item is
     {title, image_bytes, content_type, attachment_type, floor, zone,
-    item_range, reference_note}, in the display order they should appear in
-    the final contract PDF."""
+    item_range, reference_note, editor_state}, in the display order they
+    should appear in the final contract PDF."""
     with get_conn() as conn:
         _lock_house(conn, house_id)
         conn.execute("DELETE FROM contract_attachments WHERE house_id = %s", (house_id,))
@@ -676,8 +681,8 @@ def replace_contract_attachments(house_id: str, items: list[dict[str, Any]]) -> 
             """
             INSERT INTO contract_attachments
                 (house_id, position, title, image_bytes, content_type,
-                 attachment_type, floor, zone, item_range, reference_note)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 attachment_type, floor, zone, item_range, reference_note, editor_state)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             [
                 (
@@ -691,6 +696,7 @@ def replace_contract_attachments(house_id: str, items: list[dict[str, Any]]) -> 
                     str(item.get("zone") or ""),
                     str(item.get("item_range") or ""),
                     str(item.get("reference_note") or ""),
+                    item.get("editor_state"),
                 )
                 for i, item in enumerate(items)
             ],
@@ -702,7 +708,7 @@ def get_contract_attachments_meta(house_id: str) -> list[dict[str, Any]]:
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT id, position, title, attachment_type, floor, zone, item_range, reference_note
+            SELECT id, position, title, attachment_type, floor, zone, item_range, reference_note, editor_state
             FROM contract_attachments WHERE house_id = %s ORDER BY position
             """,
             (house_id,),
