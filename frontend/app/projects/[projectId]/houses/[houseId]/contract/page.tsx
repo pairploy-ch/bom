@@ -170,11 +170,12 @@ export default function ContractPage() {
   const saveAttachments = useMutation({
     mutationFn: async () => {
       const list = pages ?? [];
-      const items: { meta: ContractAttachmentUpload; blob: Blob }[] = [];
+      const items: { meta: ContractAttachmentUpload; blob: Blob; wordImages?: [Blob, Blob] | null }[] = [];
       for (const p of list) {
         const handle = canvasRefs.current[p.key];
         const blob = await handle?.toBlob();
         if (blob) {
+          const slotBlobs = (await handle?.getSlotBlobs()) ?? [];
           items.push({
             meta: {
               title: p.title,
@@ -186,6 +187,10 @@ export default function ContractPage() {
               editor_state: handle?.getEditorState() ?? null,
             },
             blob,
+            // Only send the two slots separately when both are actually
+            // filled — otherwise `blob` (the flattened single image) is
+            // already the whole page and there's nothing to split.
+            wordImages: slotBlobs.length === 2 && slotBlobs[0] && slotBlobs[1] ? [slotBlobs[0], slotBlobs[1]] : null,
           });
         }
       }

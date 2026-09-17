@@ -2686,10 +2686,24 @@ def generate_contract_docx(
             run.font.name = _DOCX_FONT
             run.font.size = Pt(11)
 
-        img_para = doc.add_paragraph()
-        img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        w_mm, h_mm = _docx_image_size_mm(attachment["image_bytes"], 180.0, 240.0)
-        img_para.add_run().add_picture(io.BytesIO(attachment["image_bytes"]), width=Mm(w_mm), height=Mm(h_mm))
+        word_images = [b for b in (attachment.get("word_image_1_bytes"), attachment.get("word_image_2_bytes")) if b]
+        if word_images:
+            # A 2-image page — embed each slot as its own picture (still
+            # independently editable/replaceable in Word) instead of one
+            # flattened image, splitting the same 180x240mm budget the
+            # single-image case below uses so the page prints the same size.
+            for j, img_bytes in enumerate(word_images):
+                img_para = doc.add_paragraph()
+                img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                w_mm, h_mm = _docx_image_size_mm(img_bytes, 180.0, 240.0 / len(word_images))
+                img_para.add_run().add_picture(io.BytesIO(img_bytes), width=Mm(w_mm), height=Mm(h_mm))
+                if j < len(word_images) - 1:
+                    img_para.paragraph_format.space_after = Pt(10)
+        else:
+            img_para = doc.add_paragraph()
+            img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            w_mm, h_mm = _docx_image_size_mm(attachment["image_bytes"], 180.0, 240.0)
+            img_para.add_run().add_picture(io.BytesIO(attachment["image_bytes"]), width=Mm(w_mm), height=Mm(h_mm))
 
         remark_lines = _attachment_remark_lines(attachment)
         for line in remark_lines:

@@ -31,6 +31,12 @@ export interface AttachmentCanvasHandle {
   // be reopened for further editing exactly as it was left (see
   // EditorState below and initialEditorState).
   getEditorState: () => string | null;
+  // One blob per filled slot (cropped out of the already-rendered frame at
+  // the current split, no re-drawing needed), null for an empty slot — used
+  // so a 2-image page can be exported to Word as two separate, independently
+  // re-editable pictures instead of one flattened image. Layout 1 just
+  // resolves to a single-element array matching toBlob().
+  getSlotBlobs: () => Promise<(Blob | null)[]>;
 }
 
 // Everything needed to reconstruct the canvas's editable state — separate
@@ -587,6 +593,31 @@ export const ContractAttachmentCanvas = forwardRef<
             slotImages: imageSlotsRef.current.map((img) => (img ? imageToDataUrl(img) : null)),
           };
           return JSON.stringify(state);
+        },
+        getSlotBlobs: () => {
+          const canvas = canvasRef.current;
+          if (!canvas) return Promise.resolve([]);
+          if (layout === 1) {
+            return new Promise((resolve) => canvas.toBlob((blob) => resolve([blob]), "image/png"));
+          }
+          const splitY = canvas.height * splitRatio;
+          const halfGap = Math.min(SLOT_GAP_PX / 2, splitY / 2, (canvas.height - splitY) / 2);
+          const bounds = [
+            { y: 0, h: splitY - halfGap },
+            { y: splitY + halfGap, h: canvas.height - splitY - halfGap },
+          ];
+          return Promise.all(
+            bounds.map((b, i) => {
+              if (!imageSlotsRef.current[i] || b.h < 1) return Promise.resolve<Blob | null>(null);
+              const off = document.createElement("canvas");
+              off.width = canvas.width;
+              off.height = Math.round(b.h);
+              const ctx = off.getContext("2d");
+              if (!ctx) return Promise.resolve<Blob | null>(null);
+              ctx.drawImage(canvas, 0, b.y, canvas.width, b.h, 0, 0, canvas.width, b.h);
+              return new Promise<Blob | null>((resolve) => off.toBlob((blob) => resolve(blob), "image/png"));
+            })
+          );
         },
       }),
       [layout, splitRatio, slotWidthRatios, canvasSize]

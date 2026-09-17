@@ -231,6 +231,15 @@ def init_db() -> None:
             -- further editing later. image_bytes above stays the flattened
             -- PNG actually used in the exported PDF/DOCX either way.
             ALTER TABLE contract_attachments ADD COLUMN IF NOT EXISTS editor_state TEXT;
+            -- Set only for a 2-image page: that page's two slot images
+            -- cropped out separately (not the flattened image_bytes above),
+            -- so the Word export can embed them as two separate, still
+            -- individually editable pictures instead of one merged one. The
+            -- PDF export always uses image_bytes regardless.
+            ALTER TABLE contract_attachments ADD COLUMN IF NOT EXISTS word_image_1_bytes BYTEA;
+            ALTER TABLE contract_attachments ADD COLUMN IF NOT EXISTS word_image_1_content_type TEXT;
+            ALTER TABLE contract_attachments ADD COLUMN IF NOT EXISTS word_image_2_bytes BYTEA;
+            ALTER TABLE contract_attachments ADD COLUMN IF NOT EXISTS word_image_2_content_type TEXT;
 
             -- One row per completed export, so a house can be "saved" across many
             -- timestamped versions and any past one re-downloaded later, instead of only
@@ -672,8 +681,11 @@ def get_quotation_pdf_bytes(pdf_id: int) -> tuple[str, bytes] | None:
 def replace_contract_attachments(house_id: str, items: list[dict[str, Any]]) -> None:
     """Replaces all attachment pages for this house — each item is
     {title, image_bytes, content_type, attachment_type, floor, zone,
-    item_range, reference_note, editor_state}, in the display order they
-    should appear in the final contract PDF."""
+    item_range, reference_note, editor_state, word_image_1_bytes,
+    word_image_1_content_type, word_image_2_bytes, word_image_2_content_type},
+    in the display order they should appear in the final contract PDF. The
+    word_image_* pair is only set for a 2-image page (see
+    generate_contract_docx) — None/absent otherwise."""
     with get_conn() as conn:
         _lock_house(conn, house_id)
         conn.execute("DELETE FROM contract_attachments WHERE house_id = %s", (house_id,))
@@ -681,8 +693,10 @@ def replace_contract_attachments(house_id: str, items: list[dict[str, Any]]) -> 
             """
             INSERT INTO contract_attachments
                 (house_id, position, title, image_bytes, content_type,
-                 attachment_type, floor, zone, item_range, reference_note, editor_state)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 attachment_type, floor, zone, item_range, reference_note, editor_state,
+                 word_image_1_bytes, word_image_1_content_type,
+                 word_image_2_bytes, word_image_2_content_type)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             [
                 (
@@ -697,6 +711,10 @@ def replace_contract_attachments(house_id: str, items: list[dict[str, Any]]) -> 
                     str(item.get("item_range") or ""),
                     str(item.get("reference_note") or ""),
                     item.get("editor_state"),
+                    item.get("word_image_1_bytes"),
+                    item.get("word_image_1_content_type"),
+                    item.get("word_image_2_bytes"),
+                    item.get("word_image_2_content_type"),
                 )
                 for i, item in enumerate(items)
             ],
@@ -728,11 +746,15 @@ def get_contract_attachment_bytes(attachment_id: int) -> tuple[bytes, str] | Non
 
 def get_contract_attachments_full(house_id: str) -> list[dict[str, Any]]:
     """Ordered attachment rows (title, image_bytes, and remark metadata) for
-    building the combined contract PDF."""
+    building the combined contract PDF/DOCX. word_image_1/2_bytes are only
+    non-None for a 2-image page — see generate_contract_docx, which embeds
+    them as two separate pictures instead of the single flattened
+    image_bytes in that case (the PDF always uses image_bytes)."""
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT title, image_bytes, attachment_type, floor, zone, item_range, reference_note
+            SELECT title, image_bytes, attachment_type, floor, zone, item_range, reference_note,
+                   word_image_1_bytes, word_image_2_bytes
             FROM contract_attachments WHERE house_id = %s ORDER BY position
             """,
             (house_id,),
@@ -746,6 +768,8 @@ def get_contract_attachments_full(house_id: str) -> list[dict[str, Any]]:
             "zone": r["zone"],
             "item_range": r["item_range"],
             "reference_note": r["reference_note"],
+            "word_image_1_bytes": bytes(r["word_image_1_bytes"]) if r["word_image_1_bytes"] is not None else None,
+            "word_image_2_bytes": bytes(r["word_image_2_bytes"]) if r["word_image_2_bytes"] is not None else None,
         }
         for r in rows
     ]

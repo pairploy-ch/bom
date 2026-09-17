@@ -375,9 +375,25 @@ export const api = {
   // Replaces the FULL ordered set of attachment pages in one call — pass
   // every page every time (matches the backend's delete-then-bulk-insert
   // semantics), simplest correct way to handle reordering/deletes.
-  uploadContractAttachments: (id: string, pages: { meta: ContractAttachmentUpload; blob: Blob }[]) => {
+  // `wordImages` (only present for a page with 2 filled slots) is that
+  // page's two slot images cropped separately, sent alongside `blob` (the
+  // one flattened page image, still used for the PDF and the thumbnail) so
+  // the Word export can embed them as two separate, independently editable
+  // pictures instead of one merged one.
+  uploadContractAttachments: (
+    id: string,
+    pages: { meta: ContractAttachmentUpload; blob: Blob; wordImages?: [Blob, Blob] | null }[]
+  ) => {
     const fd = new FormData();
     pages.forEach((p, i) => fd.append("files", p.blob, `page-${i}.png`));
+    pages.forEach((p, i) => {
+      if (p.wordImages) {
+        fd.append("word_image_1_files", p.wordImages[0], `page-${i}-1.png`);
+        fd.append("word_image_1_indices", String(i));
+        fd.append("word_image_2_files", p.wordImages[1], `page-${i}-2.png`);
+        fd.append("word_image_2_indices", String(i));
+      }
+    });
     fd.append("pages", JSON.stringify(pages.map((p) => p.meta)));
     return request<ContractAttachmentMeta[]>(`/houses/${id}/contract/attachments`, { method: "PUT", body: fd });
   },

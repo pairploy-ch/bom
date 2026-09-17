@@ -350,11 +350,27 @@ async def upload_contract_attachments(house_id: str, request: Request):
         raise HTTPException(422, f"pages must be a JSON array of attachment metadata objects: {exc}")
     if len(page_list) != len(files):
         raise HTTPException(422, "pages must have one entry per uploaded file.")
+
+    # Only present for a 2-image page — that page's two slot images cropped
+    # out separately by the canvas, keyed by page index (not every page has
+    # these, so they're sent as sparse parallel file/index lists rather than
+    # one-per-page). See generate_contract_docx for why.
+    async def _indexed_images(files_field: str, indices_field: str) -> dict[int, tuple[bytes, str]]:
+        result = {}
+        for f, idx in zip(form.getlist(files_field), form.getlist(indices_field)):
+            result[int(idx)] = (await f.read(), f.content_type or "image/png")
+        return result
+
+    word_image_1_by_idx = await _indexed_images("word_image_1_files", "word_image_1_indices")
+    word_image_2_by_idx = await _indexed_images("word_image_2_files", "word_image_2_indices")
+
     items = []
-    for file, page in zip(files, page_list):
+    for i, (file, page) in enumerate(zip(files, page_list)):
         content_type = file.content_type or "image/png"
         if not content_type.startswith("image/"):
             raise HTTPException(422, "Attachments must be image files.")
+        word_1 = word_image_1_by_idx.get(i)
+        word_2 = word_image_2_by_idx.get(i)
         items.append({
             "title": page.title,
             "image_bytes": await file.read(),
@@ -365,6 +381,10 @@ async def upload_contract_attachments(house_id: str, request: Request):
             "item_range": page.item_range,
             "reference_note": page.reference_note,
             "editor_state": page.editor_state,
+            "word_image_1_bytes": word_1[0] if word_1 else None,
+            "word_image_1_content_type": word_1[1] if word_1 else None,
+            "word_image_2_bytes": word_2[0] if word_2 else None,
+            "word_image_2_content_type": word_2[1] if word_2 else None,
         })
     db.replace_contract_attachments(house_id, items)
     return db.get_contract_attachments_meta(house_id)
