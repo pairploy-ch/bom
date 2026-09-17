@@ -34,8 +34,22 @@ type Annotation =
 // handlePointerDown) — the in-progress "draft" shape is always one of these.
 type DraggableAnnotation = Extract<Annotation, { kind: "pen" | "cross" | "circle" | "arrow" }>;
 
-const CANVAS_WIDTH = 1000;
-const CANVAS_HEIGHT = 700;
+// Starting size only — the frame itself is freely resizable by dragging its
+// bottom-right corner (see the resize handle), so these are just what a
+// brand-new page opens at, not a hard cap.
+const DEFAULT_CANVAS_WIDTH = 1000;
+const DEFAULT_CANVAS_HEIGHT = 700;
+// Bounds for that drag-resize — generous enough for a tall 2-image page
+// without allowing something absurd that would blow up memory/export time.
+const MIN_CANVAS_WIDTH = 400;
+const MIN_CANVAS_HEIGHT = 300;
+const MAX_CANVAS_WIDTH = 2400;
+const MAX_CANVAS_HEIGHT = 3200;
+// A fresh switch to 2-image layout bumps the frame to at least this tall
+// (never shrinks it) so each half doesn't start out cramped at half of the
+// single-image default height.
+const TWO_IMAGE_MIN_HEIGHT = 1000;
+
 const STROKE_COLOR = "#dc2626";
 const TEXT_FONT_SIZE = 13;
 // How close a click/drag point needs to be to an annotation's line/edge to
@@ -47,6 +61,10 @@ const ERASE_RADIUS = 16;
 // all the way to 0/1, so neither slot can be resized down to nothing.
 const MIN_SPLIT_RATIO = 0.15;
 const MAX_SPLIT_RATIO = 0.85;
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, v));
+}
 
 const TOOLS: { key: Tool; label: string; icon: typeof Pencil }[] = [
   { key: "pen", label: "ปากกา", icon: Pencil },
@@ -142,6 +160,16 @@ function drawShape(ctx: CanvasRenderingContext2D, a: Extract<Annotation, { kind:
   ctx.fill();
 }
 
+// Remaps an annotation's coordinates by (sx, sy) — used when the frame is
+// resized (drag-corner or the auto height bump on switching to 2-image
+// layout) so existing marks stay in the same relative spot on the image
+// instead of keeping their old absolute pixel position.
+function scaleAnnotation(a: Annotation, sx: number, sy: number): Annotation {
+  if (a.kind === "pen") return { kind: "pen", points: a.points.map((p) => ({ x: p.x * sx, y: p.y * sy })) };
+  if (a.kind === "text") return { ...a, x: a.x * sx, y: a.y * sy };
+  return { ...a, x1: a.x1 * sx, y1: a.y1 * sy, x2: a.x2 * sx, y2: a.y2 * sy };
+}
+
 export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { initialImageUrl?: string | null }>(
   function ContractAttachmentCanvas({ initialImageUrl }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
@@ -178,6 +206,19 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
     // stays fixed and only how it's divided between the two photos changes.
     const [splitRatio, setSplitRatio] = useState(0.5);
     const resizingSplitRef = useRef(false);
+    // The frame's own width/height — no longer a fixed constant, since it's
+    // now resizable by dragging its bottom-right corner (see the resize
+    // handle / handleFrameResize*). Drag state (start point + a snapshot of
+    // the annotations to rescale from) lives in a ref since it only matters
+    // between pointerdown and pointerup, never needs to trigger a render.
+    const [canvasSize, setCanvasSize] = useState({ w: DEFAULT_CANVAS_WIDTH, h: DEFAULT_CANVAS_HEIGHT });
+    const frameResizeRef = useRef<{
+      startX: number;
+      startY: number;
+      startW: number;
+      startH: number;
+      baseAnnotations: Annotation[];
+    } | null>(null);
     const [tool, setTool] = useState<Tool>("pen");
     const [textEditor, setTextEditor] = useState<{ cssX: number; cssY: number; canvasX: number; canvasY: number; value: string } | null>(null);
 
@@ -289,11 +330,53 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
         imageSlotsRef.current.push(null);
         setFilledSlots((cur) => [cur[0] ?? false, false]);
         setSplitRatio(0.5);
+        // Give each half a decent starting height instead of splitting
+        // whatever single-image height was already set (often the cramped
+        // default) — never shrinks an already-taller frame.
+        if (canvasSize.h < TWO_IMAGE_MIN_HEIGHT) {
+          const sy = TWO_IMAGE_MIN_HEIGHT / canvasSize.h;
+          annotationsRef.current = annotationsRef.current.map((a) => scaleAnnotation(a, 1, sy));
+          setCanvasSize({ w: canvasSize.w, h: TWO_IMAGE_MIN_HEIGHT });
+        }
       } else if (n === 1 && imageSlotsRef.current.length > 1) {
         imageSlotsRef.current = [imageSlotsRef.current[0]];
         setFilledSlots((cur) => [cur[0] ?? false]);
         activeSlotRef.current = 0;
       }
+    };
+
+    // Drag-resizes the whole frame from its bottom-right corner. Annotation
+    // coordinates are rescaled from a snapshot taken at drag-start (not
+    // incrementally per pointermove) so repeated small scale-and-round-trip
+    // errors can't accumulate during one drag.
+    const handleFrameResizeDown = (e: React.PointerEvent<HTMLDivElement>) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      frameResizeRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        startW: canvas.width,
+        startH: canvas.height,
+        baseAnnotations: annotationsRef.current,
+      };
+      e.currentTarget.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    };
+
+    const handleFrameResizeMove = (e: React.PointerEvent<HTMLDivElement>) => {
+      const start = frameResizeRef.current;
+      if (!start) return;
+      const newW = clamp(start.startW + (e.clientX - start.startX), MIN_CANVAS_WIDTH, MAX_CANVAS_WIDTH);
+      const newH = clamp(start.startH + (e.clientY - start.startY), MIN_CANVAS_HEIGHT, MAX_CANVAS_HEIGHT);
+      const sx = newW / start.startW;
+      const sy = newH / start.startH;
+      annotationsRef.current = start.baseAnnotations.map((a) => scaleAnnotation(a, sx, sy));
+      setCanvasSize({ w: newW, h: newH });
+    };
+
+    const handleFrameResizeUp = (e: React.PointerEvent<HTMLDivElement>) => {
+      frameResizeRef.current = null;
+      e.currentTarget.releasePointerCapture(e.pointerId);
     };
 
     const clearSlot = (index: number) => {
@@ -313,11 +396,15 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // Redraws whenever the slot split changes — see changeLayout's comment.
+    // Redraws whenever the slot split or frame size changes — the canvas's
+    // width/height attributes (set from canvasSize below) only take effect
+    // in the DOM after this render commits, so a redraw() called inline
+    // during the event handler that changed them would still see the old
+    // canvas.width/height. This effect runs after that commit instead.
     useEffect(() => {
       redraw();
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [layout, splitRatio]);
+    }, [layout, splitRatio, canvasSize]);
 
     useImperativeHandle(
       ref,
@@ -563,30 +650,38 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
             </>
           )}
         </div>
+        {/* Scrolls in whichever direction the frame ends up bigger than the
+            viewport — the frame's own size is no longer capped to a fraction
+            of the viewport height, so it can genuinely grow past it. */}
+        <div className="max-w-full overflow-auto rounded-lg">
         <div
           ref={containerRef}
           tabIndex={0}
           onPaste={handlePaste}
-          // Fixed to a large viewport-relative height (not the canvas's
-          // native 1000x700 aspect ratio) so a pasted screenshot's whole
-          // drawable area fits on screen without scrolling mid-stroke —
-          // posFromEvent() already maps CSS-space clicks to canvas-space
-          // independently per axis, so stretching here doesn't misalign
-          // drawing coordinates. Width is auto (not full-width) so the
-          // canvas keeps its own aspect ratio instead of being stretched
-          // non-uniformly by the container's width — it's centered via
-          // mx-auto on the canvas itself instead.
-          className="relative mx-auto h-[75vh] w-fit overflow-hidden rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 outline-none focus:border-[var(--accent)]"
+          style={{ width: canvasSize.w, height: canvasSize.h }}
+          // posFromEvent() maps CSS-space clicks to canvas-space
+          // independently per axis, so the container/canvas being sized in
+          // real px (1:1 with the canvas's own resolution, not stretched to
+          // fit some fraction of the viewport) doesn't misalign drawing
+          // coordinates — it just means what you draw is always full-res.
+          className="relative overflow-hidden rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 outline-none focus:border-[var(--accent)]"
         >
           <canvas
             ref={canvasRef}
-            width={CANVAS_WIDTH}
-            height={CANVAS_HEIGHT}
+            width={canvasSize.w}
+            height={canvasSize.h}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={stopDrawing}
             onPointerLeave={stopDrawing}
-            className={cn("h-full w-auto touch-none rounded-lg", tool === "text" ? "cursor-text" : "cursor-crosshair")}
+            className={cn("block touch-none rounded-lg", tool === "text" ? "cursor-text" : "cursor-crosshair")}
+          />
+          <div
+            onPointerDown={handleFrameResizeDown}
+            onPointerMove={handleFrameResizeMove}
+            onPointerUp={handleFrameResizeUp}
+            title="ลากเพื่อปรับขนาดกรอบ (กว้าง/สูง)"
+            className="absolute bottom-0 right-0 z-20 h-6 w-6 cursor-nwse-resize touch-none rounded-tl-md bg-[var(--accent)]/70 hover:bg-[var(--accent)]"
           />
           {layout === 2 && (
             <div
@@ -633,6 +728,7 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
               className="absolute z-10 min-w-[140px] -translate-y-1 rounded border border-[var(--accent)] bg-white/95 px-1.5 py-0.5 text-base text-[#dc2626] shadow outline-none"
             />
           )}
+        </div>
         </div>
       </div>
     );
