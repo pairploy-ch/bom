@@ -1897,6 +1897,56 @@ def _render_contract_clauses(details: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class _SignatureLine(Flowable):
+    """
+    Draws the "ลงชื่อ...................." dotted line with the party's
+    uploaded signature image (if any) painted directly on top of it — a real
+    signature rests ON the line, not floating in a separate row above it.
+    Renders as plain centered text when no image is given, same as before.
+    """
+
+    def __init__(
+        self,
+        label: str,
+        image_bytes: bytes | None,
+        width: float = 85 * mm,
+        font_name: str = "TPTankhun",
+        font_size: float = 15,
+    ):
+        super().__init__()
+        self.label = label
+        self.image_bytes = image_bytes
+        self.width = width
+        self.font_name = font_name
+        self.font_size = font_size
+        # Extra headroom above the text line for the image to rise into —
+        # matches the ~12mm cap the old separate sig-image row used.
+        self.img_area_h = 12 * mm if image_bytes else 0
+        self.height = self.font_size * 1.3 + self.img_area_h
+
+    def wrap(self, avail_width: float, avail_height: float) -> tuple[float, float]:
+        return (self.width, self.height)
+
+    def draw(self) -> None:
+        canv = self.canv
+        canv.saveState()
+        canv.setFont(self.font_name, self.font_size)
+        canv.drawCentredString(self.width / 2, 0, self.label)
+        if self.image_bytes:
+            iw, ih = ImageReader(io.BytesIO(self.image_bytes)).getSize()
+            scale = min((self.width * 0.5) / iw, self.img_area_h / ih)
+            draw_w, draw_h = iw * scale, ih * scale
+            x = (self.width - draw_w) / 2
+            # Bottom edge sits slightly below the text baseline (where the
+            # dots sit) so the stroke visually crosses/rests on the line,
+            # like an actual signature — not floating in its own row above.
+            y = -2
+            canv.drawImage(
+                ImageReader(io.BytesIO(self.image_bytes)), x, y, draw_w, draw_h, mask="auto"
+            )
+        canv.restoreState()
+
+
 def _build_contract_text_story(details: dict[str, Any], signatures: dict[str, bytes] | None = None) -> list[Any]:
     """
     Renders ข้อ 1-8 of the 10DK interior-design contract template. Only the
@@ -1946,23 +1996,20 @@ def _build_contract_text_story(details: dict[str, Any], signatures: dict[str, by
     def sign_cell(text: str) -> Paragraph:
         return Paragraph(text, sign_style)
 
-    def sig_cell(role: str) -> Any:
-        # Sits between the dotted "ลงชื่อ...." line and the printed name —
-        # a fixed-height Spacer when nothing's uploaded for this role keeps
-        # every column's rows aligned regardless of which roles have one.
-        img_bytes = (signatures or {}).get(role)
-        return _sized_image(img_bytes, 45 * mm, 12 * mm) if img_bytes else Spacer(1, 12 * mm)
-
     party_b_extra = content["party_b_extra_lines"]
     sign_rows = [
-        ["ลงชื่อ....................................................ผู้ว่าจ้าง", "ลงชื่อ....................................................ผู้รับจ้าง"],
-        [sig_cell("client"), sig_cell("contractor")],
+        [
+            _SignatureLine("ลงชื่อ....................................................ผู้ว่าจ้าง", (signatures or {}).get("client")),
+            _SignatureLine("ลงชื่อ....................................................ผู้รับจ้าง", (signatures or {}).get("contractor")),
+        ],
         [f"({esc(details.get('client_name') or '')})", esc(content["party_b_name_line"])],
         ["", esc(party_b_extra[0]) if len(party_b_extra) > 0 else ""],
         ["", esc(party_b_extra[1]) if len(party_b_extra) > 1 else ""],
         [Spacer(1, 10 * mm), Spacer(1, 10 * mm)],
-        ["ลงชื่อ....................................................พยาน", "ลงชื่อ....................................................พยาน"],
-        [sig_cell("witness_1"), sig_cell("witness_2")],
+        [
+            _SignatureLine("ลงชื่อ....................................................พยาน", (signatures or {}).get("witness_1")),
+            _SignatureLine("ลงชื่อ....................................................พยาน", (signatures or {}).get("witness_2")),
+        ],
         [f"({esc(details.get('witness_1_name') or '')})", f"({esc(details.get('witness_2_name') or '')})"],
     ]
     sign_table = Table(
@@ -2506,19 +2553,22 @@ def _build_contract_text_docx(
     body_para(content["closing"])
     doc.add_paragraph()
 
-    # A ("sig", role) cell embeds that role's signature image (if uploaded)
-    # between the dotted "ลงชื่อ...." line and the printed name below it;
-    # left empty (but present, for row alignment) when nothing's uploaded.
+    # A ("sig", role) cell draws that role's signature image (if uploaded)
+    # directly on top of the dotted "ลงชื่อ...." line below it — a real
+    # signature rests ON the line, not floating in its own row above it.
+    # docx has no true overlap primitive, so this is approximated with a
+    # negative "space after" on the image's own paragraph, pulling the
+    # "ลงชื่อ...." paragraph immediately below it up underneath the image.
     party_b_extra = content["party_b_extra_lines"]
     sign_rows = [
-        ["ลงชื่อ....................................................ผู้ว่าจ้าง", "ลงชื่อ....................................................ผู้รับจ้าง"],
-        [("sig", "client"), ("sig", "contractor")],
+        [("sig", "client", "ลงชื่อ....................................................ผู้ว่าจ้าง"),
+         ("sig", "contractor", "ลงชื่อ....................................................ผู้รับจ้าง")],
         [f"({g('client_name')})", content["party_b_name_line"]],
         ["", party_b_extra[0] if len(party_b_extra) > 0 else ""],
         ["", party_b_extra[1] if len(party_b_extra) > 1 else ""],
         ["", ""],
-        ["ลงชื่อ....................................................พยาน", "ลงชื่อ....................................................พยาน"],
-        [("sig", "witness_1"), ("sig", "witness_2")],
+        [("sig", "witness_1", "ลงชื่อ....................................................พยาน"),
+         ("sig", "witness_2", "ลงชื่อ....................................................พยาน")],
         [f"({g('witness_1_name')})", f"({g('witness_2_name')})"],
     ]
     sign_table = doc.add_table(rows=len(sign_rows), cols=2)
@@ -2528,16 +2578,32 @@ def _build_contract_text_docx(
         for c, cell_val in enumerate(row):
             cells[c].width = Mm(85)
             if isinstance(cell_val, tuple):
-                img_bytes = (signatures or {}).get(cell_val[1])
+                _, role, label = cell_val
+                img_bytes = (signatures or {}).get(role)
                 cells[c].text = ""
                 if img_bytes:
-                    w_mm, h_mm = _docx_image_size_mm(img_bytes, 45, 12)
-                    p = cells[c].paragraphs[0]
-                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    p.add_run().add_picture(io.BytesIO(img_bytes), width=Mm(w_mm), height=Mm(h_mm))
+                    # docx's paragraph-spacing schema is unsigned (python-docx
+                    # rejects a negative space_after outright), so a true
+                    # pixel overlap like the PDF path isn't achievable here —
+                    # this is the closest supported approximation: zero gap
+                    # between the image and the line right under it, instead
+                    # of the old visible gap from a separate spacer row.
+                    w_mm, h_mm = _docx_image_size_mm(img_bytes, 45, 14)
+                    img_para = cells[c].paragraphs[0]
+                    img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    img_para.add_run().add_picture(io.BytesIO(img_bytes), width=Mm(w_mm), height=Mm(h_mm))
+                    img_para.paragraph_format.space_after = Pt(0)
+                    label_para = cells[c].add_paragraph()
+                    label_para.paragraph_format.space_before = Pt(0)
+                    label_run = label_para.add_run(label)
+                    label_run.font.name = _DOCX_FONT
+                    label_run.font.size = Pt(15)
+                    label_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                else:
+                    _set_cell_text(cells[c], label, align=WD_ALIGN_PARAGRAPH.CENTER, size=15)
             else:
                 _set_cell_text(cells[c], cell_val, align=WD_ALIGN_PARAGRAPH.CENTER, size=15)
-        if r == 5:
+        if r == 4:
             # Blank spacer row (matches the PDF's Spacer(1, 10*mm) between
             # the signatory block and the witness block) — extra space
             # after this row's (empty) paragraphs instead of a real gap,
