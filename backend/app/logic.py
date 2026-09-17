@@ -2013,7 +2013,7 @@ def _attachment_remark_lines(attachment: dict[str, Any]) -> list[str]:
     kind = attachment.get("attachment_type") or ""
     if kind in ("plan", "perspective"):
         return [_ATTACHMENT_PLAN_PERSPECTIVE_NOTE]
-    if kind == "furniture_list":
+    if kind in ("furniture_list", "perspective_and_furniture_list"):
         item_range = attachment.get("item_range") or ""
         reference_note = attachment.get("reference_note") or ""
         return [

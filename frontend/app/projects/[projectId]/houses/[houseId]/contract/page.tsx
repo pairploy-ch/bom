@@ -44,6 +44,10 @@ const ATTACHMENT_TYPES: { value: AttachmentType; label: string }[] = [
   { value: "plan", label: "แปลน (Plan)" },
   { value: "perspective", label: "ภาพเพอร์สเปคทีฟ (Perspective)" },
   { value: "furniture_list", label: "รายการเฟอร์นิเจอร์ (Furniture List)" },
+  {
+    value: "perspective_and_furniture_list",
+    label: "ภาพเพอร์สเปคทีฟ + รายการเฟอร์นิเจอร์ (Perspective + Furniture List)",
+  },
 ];
 
 interface DraftPage {
@@ -780,7 +784,7 @@ export default function ContractPage() {
                     />
                   </Field>
                 </div>
-                {p.attachmentType === "furniture_list" && (
+                {(p.attachmentType === "furniture_list" || p.attachmentType === "perspective_and_furniture_list") && (
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <Field label="ลำดับที่เฟอร์นิเจอร์ (สั่งผลิต)" hint="ช่วงเลขรายการในตารางใบราคา เช่น 1-27">
                       <Input

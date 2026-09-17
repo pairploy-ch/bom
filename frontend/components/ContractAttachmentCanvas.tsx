@@ -43,6 +43,11 @@ const TEXT_FONT_SIZE = 13;
 // or shape outline without needing pixel-perfect aim.
 const ERASE_RADIUS = 16;
 
+// In 2-image layout, how far the top/bottom split can be dragged — never
+// all the way to 0/1, so neither slot can be resized down to nothing.
+const MIN_SPLIT_RATIO = 0.15;
+const MAX_SPLIT_RATIO = 0.85;
+
 const TOOLS: { key: Tool; label: string; icon: typeof Pencil }[] = [
   { key: "pen", label: "ปากกา", icon: Pencil },
   { key: "cross", label: "กากบาท", icon: XIcon },
@@ -167,6 +172,12 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
     const fontFamilyRef = useRef("sans-serif");
     const [layout, setLayout] = useState<1 | 2>(1);
     const [filledSlots, setFilledSlots] = useState<boolean[]>([false]);
+    // Fraction of the frame's total height given to the top slot in
+    // 2-image layout — dragging the divider between the two adjusts this
+    // instead of resizing the frame itself, so the overall page height
+    // stays fixed and only how it's divided between the two photos changes.
+    const [splitRatio, setSplitRatio] = useState(0.5);
+    const resizingSplitRef = useRef(false);
     const [tool, setTool] = useState<Tool>("pen");
     const [textEditor, setTextEditor] = useState<{ cssX: number; cssY: number; canvasX: number; canvasY: number; value: string } | null>(null);
 
@@ -183,11 +194,16 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       // Layout 1 = one slot covering the whole frame; layout 2 = two slots
-      // stacked top/bottom, each getting half the height.
-      const slotHeight = canvas.height / layout;
+      // stacked top/bottom, split at splitRatio (total height stays fixed —
+      // dragging the divider only changes how it's divided between them).
+      const splitY = layout === 2 ? canvas.height * splitRatio : canvas.height;
+      const slotBounds = layout === 2 ? [
+        { y: 0, h: splitY },
+        { y: splitY, h: canvas.height - splitY },
+      ] : [{ y: 0, h: canvas.height }];
       imageSlotsRef.current.forEach((img, i) => {
         if (!img) return;
-        const slotY = i * slotHeight;
+        const { y: slotY, h: slotHeight } = slotBounds[i];
         // "cover" fit within this slot's box — scale up to fill it and crop
         // the overflow, instead of "contain" (which left white bars around
         // any pasted image whose aspect ratio didn't match the box). Clipped
@@ -208,8 +224,8 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
         ctx.strokeStyle = "#cbd5e1";
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(0, slotHeight);
-        ctx.lineTo(canvas.width, slotHeight);
+        ctx.moveTo(0, splitY);
+        ctx.lineTo(canvas.width, splitY);
         ctx.stroke();
         ctx.restore();
       }
@@ -272,6 +288,7 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       if (n === 2 && imageSlotsRef.current.length < 2) {
         imageSlotsRef.current.push(null);
         setFilledSlots((cur) => [cur[0] ?? false, false]);
+        setSplitRatio(0.5);
       } else if (n === 1 && imageSlotsRef.current.length > 1) {
         imageSlotsRef.current = [imageSlotsRef.current[0]];
         setFilledSlots((cur) => [cur[0] ?? false]);
@@ -300,7 +317,7 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
     useEffect(() => {
       redraw();
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [layout]);
+    }, [layout, splitRatio]);
 
     useImperativeHandle(
       ref,
@@ -357,7 +374,7 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       // just bookkeeping and never interferes with drawing.
       if (layout === 2) {
         const rect = canvasRef.current!.getBoundingClientRect();
-        activeSlotRef.current = e.clientY - rect.top < rect.height / 2 ? 0 : 1;
+        activeSlotRef.current = e.clientY - rect.top < rect.height * splitRatio ? 0 : 1;
       }
       if (tool === "text") {
         // The canvas itself isn't focusable, so a plain click here would
@@ -463,6 +480,28 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       redraw();
     };
 
+    // Dragging the divider between the two slots resizes them (total frame
+    // height is fixed — only how it's split between top/bottom changes).
+    // Uses the container (not the canvas) for its rect since the handle
+    // sits in CSS/percentage space, not canvas-pixel space.
+    const handleDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+      resizingSplitRef.current = true;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    };
+
+    const handleDividerPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!resizingSplitRef.current || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const ratio = (e.clientY - rect.top) / rect.height;
+      setSplitRatio(Math.min(MAX_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, ratio)));
+    };
+
+    const handleDividerPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+      resizingSplitRef.current = false;
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    };
+
     return (
       <div>
         <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -549,22 +588,36 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
             onPointerLeave={stopDrawing}
             className={cn("h-full w-auto touch-none rounded-lg", tool === "text" ? "cursor-text" : "cursor-crosshair")}
           />
+          {layout === 2 && (
+            <div
+              onPointerDown={handleDividerPointerDown}
+              onPointerMove={handleDividerPointerMove}
+              onPointerUp={handleDividerPointerUp}
+              style={{ top: `${splitRatio * 100}%` }}
+              className="absolute inset-x-0 z-20 -mt-2 h-4 cursor-row-resize touch-none"
+              title="ลากเพื่อปรับสัดส่วนรูปบน/ล่าง"
+            >
+              <div className="mx-auto mt-1.5 h-1 w-16 rounded-full bg-[var(--accent)]/70" />
+            </div>
+          )}
           {Array.from({ length: layout }, (_, i) => i)
             .filter((i) => !filledSlots[i])
-            .map((i) => (
-              <div
-                key={i}
-                className={cn(
-                  "pointer-events-none absolute inset-x-0 flex flex-col items-center justify-center gap-2 text-slate-400",
-                  layout === 1 ? "inset-y-0" : i === 0 ? "top-0 h-1/2" : "bottom-0 h-1/2"
-                )}
-              >
-                <ImageOff size={layout === 1 ? 28 : 20} />
-                <p className="text-sm">
-                  คลิก{layout === 2 ? (i === 0 ? "ครึ่งบน" : "ครึ่งล่าง") : "ในกรอบนี้"}แล้วกด Ctrl+V เพื่อวางรูปภาพที่คัดลอกมา
-                </p>
-              </div>
-            ))}
+            .map((i) => {
+              const top = layout === 1 ? 0 : i === 0 ? 0 : splitRatio * 100;
+              const height = layout === 1 ? 100 : i === 0 ? splitRatio * 100 : (1 - splitRatio) * 100;
+              return (
+                <div
+                  key={i}
+                  style={{ top: `${top}%`, height: `${height}%` }}
+                  className="pointer-events-none absolute inset-x-0 flex flex-col items-center justify-center gap-2 text-slate-400"
+                >
+                  <ImageOff size={layout === 1 ? 28 : 20} />
+                  <p className="text-sm">
+                    คลิก{layout === 2 ? (i === 0 ? "ครึ่งบน" : "ครึ่งล่าง") : "ในกรอบนี้"}แล้วกด Ctrl+V เพื่อวางรูปภาพที่คัดลอกมา
+                  </p>
+                </div>
+              );
+            })}
           {textEditor && (
             <input
               autoFocus

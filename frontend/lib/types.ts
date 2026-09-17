@@ -323,7 +323,7 @@ export interface ContractDetails {
   witness_2_name: string;
 }
 
-export type AttachmentType = "" | "plan" | "perspective" | "furniture_list";
+export type AttachmentType = "" | "plan" | "perspective" | "furniture_list" | "perspective_and_furniture_list";
 
 export interface ContractAttachmentMeta {
   id: number;

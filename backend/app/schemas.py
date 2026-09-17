@@ -403,7 +403,7 @@ class ContractDetails(BaseModel):
     witness_2_name: str = "นางสาวแพรว ธวัชชัยนันท์"
 
 
-AttachmentType = Literal["", "plan", "perspective", "furniture_list"]
+AttachmentType = Literal["", "plan", "perspective", "furniture_list", "perspective_and_furniture_list"]
 
 
 class ContractAttachmentMeta(BaseModel):
@@ -411,9 +411,11 @@ class ContractAttachmentMeta(BaseModel):
     position: int
     title: str
     # Drives the auto "หมายเหตุ" footnote printed bottom-right on this page
-    # in the combined PDF (see logic.py's _ATTACHMENT_REMARKS). item_range/
-    # reference_note only matter for "furniture_list" — the "ลำดับที่ 1-27"
-    # / "(10)" blanks in that type's footnote text.
+    # in the combined PDF (see logic.py's _attachment_remark_lines).
+    # item_range/reference_note only matter for "furniture_list" and
+    # "perspective_and_furniture_list" (same footnote wording, for a page
+    # that shows a perspective render alongside its furniture list) — the
+    # "ลำดับที่ 1-27" / "(10)" blanks in that footnote text.
     attachment_type: AttachmentType = ""
     floor: str = ""
     zone: str = ""
