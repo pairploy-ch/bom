@@ -1323,7 +1323,18 @@ _QUOTATION_GRAND_TOTAL_BG = "#ffff99"
 
 
 def _fmt_money(v: float | None) -> str:
-    return "" if v is None else f"{v:,.2f}"
+    # Whole-number amounts print without a trailing ".00" — only actually
+    # fractional prices need the 2-decimal precision.
+    if v is None:
+        return ""
+    return f"{v:,.0f}" if float(v).is_integer() else f"{v:,.2f}"
+
+
+def _fmt_qty(v: float | None) -> str:
+    # "จำนวน" is always a count, never a fractional value — round to the
+    # nearest whole number rather than conditionally showing decimals like
+    # _fmt_money does for prices.
+    return "" if v is None else f"{round(v):,}"
 
 
 _REMARK_EMPHASIS_RE = re.compile(r"\*\*(.+?)\*\*")
@@ -1497,7 +1508,7 @@ def _build_quotation_table_story(
             table_data.append([
                 Paragraph(esc(row.get("label", "")), body_style),
                 Paragraph(esc(row.get("item_name", "")), body_style),
-                Paragraph(_fmt_money(qty) if qty else "", body_style),
+                Paragraph(_fmt_qty(qty) if qty else "", body_style),
                 Paragraph(price_cell, body_style),
                 Paragraph(purchase_cell, body_red_style if purchase_cell == "TBC" else body_style),
                 Paragraph(esc(row.get("remark", "")), body_style),
@@ -2330,7 +2341,7 @@ def _add_quotation_table_to_docx(
             qty = row.get("quantity")
             _set_cell_text(cells[0], str(row.get("label", "")), align=WD_ALIGN_PARAGRAPH.CENTER, size=13)
             _set_cell_text(cells[1], str(row.get("item_name", "")), size=13)
-            _set_cell_text(cells[2], _fmt_money(qty) if qty else "", align=WD_ALIGN_PARAGRAPH.RIGHT, size=13)
+            _set_cell_text(cells[2], _fmt_qty(qty) if qty else "", align=WD_ALIGN_PARAGRAPH.RIGHT, size=13)
             _set_cell_text(cells[3], price_cell, align=WD_ALIGN_PARAGRAPH.RIGHT, size=13)
             _set_cell_text(
                 cells[4],

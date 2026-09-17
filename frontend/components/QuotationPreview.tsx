@@ -2,8 +2,10 @@ import { Fragment } from "react";
 import type { QuotationRow } from "@/lib/types";
 import { cn, Input } from "@/components/ui/primitives";
 
+// Whole-number amounts print without a trailing ".00" — only actually
+// fractional totals need the 2-decimal precision.
 const fmt = (v: number | null | undefined) =>
-  v === null || v === undefined ? "" : v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  v === null || v === undefined ? "" : v.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
 // Rounds to 2 decimals for the raw editable price inputs below — backend
 // now rounds these before sending, but a saved quotation from before that

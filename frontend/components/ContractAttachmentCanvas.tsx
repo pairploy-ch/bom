@@ -42,7 +42,7 @@ type Annotation =
   | { kind: "pen"; points: Point[]; color: string }
   | { kind: "cross"; x1: number; y1: number; x2: number; y2: number; color: string }
   | { kind: "circle"; x1: number; y1: number; x2: number; y2: number; color: string }
-  | { kind: "rect"; x1: number; y1: number; x2: number; y2: number; color: string }
+  | { kind: "rect"; x1: number; y1: number; x2: number; y2: number; color: string; filled: boolean }
   | { kind: "arrow"; x1: number; y1: number; x2: number; y2: number; color: string }
   | { kind: "text"; x: number; y: number; text: string; color: string };
 
@@ -146,6 +146,14 @@ function hitTestAnnotation(a: Annotation, p: Point, ctx: CanvasRenderingContext2
     return Math.abs(normDist - 1) * ((rx + ry) / 2) <= ERASE_RADIUS;
   }
   if (a.kind === "rect") {
+    if (a.filled) {
+      return (
+        p.x >= Math.min(a.x1, a.x2) &&
+        p.x <= Math.max(a.x1, a.x2) &&
+        p.y >= Math.min(a.y1, a.y2) &&
+        p.y <= Math.max(a.y1, a.y2)
+      );
+    }
     const corners = [
       { x: a.x1, y: a.y1 },
       { x: a.x2, y: a.y1 },
@@ -189,7 +197,12 @@ function drawShape(ctx: CanvasRenderingContext2D, a: Extract<Annotation, { kind:
     return;
   }
   if (kind === "rect") {
-    ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+    const rx = Math.min(x1, x2);
+    const ry = Math.min(y1, y2);
+    const rw = Math.abs(x2 - x1);
+    const rh = Math.abs(y2 - y1);
+    if (a.filled) ctx.fillRect(rx, ry, rw, rh);
+    else ctx.strokeRect(rx, ry, rw, rh);
     return;
   }
   // arrow
@@ -275,6 +288,9 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
     } | null>(null);
     const [tool, setTool] = useState<Tool>("pen");
     const [strokeColor, setStrokeColor] = useState(DEFAULT_STROKE_COLOR);
+    // Only meaningful for the rect tool — a solid block in the current color
+    // instead of just an outline (e.g. for redacting/highlighting an area).
+    const [fillRect, setFillRect] = useState(false);
     const [textEditor, setTextEditor] = useState<{ cssX: number; cssY: number; canvasX: number; canvasY: number; value: string } | null>(null);
 
     useEffect(() => {
@@ -574,7 +590,9 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       draftRef.current =
         tool === "pen"
           ? { kind: "pen", points: [pos], color: strokeColor }
-          : { kind: tool, x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y, color: strokeColor };
+          : tool === "rect"
+            ? { kind: "rect", x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y, color: strokeColor, filled: fillRect }
+            : { kind: tool, x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y, color: strokeColor };
       e.currentTarget.setPointerCapture(e.pointerId);
       redraw();
     };
@@ -729,6 +747,20 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
               />
             ))}
           </div>
+          {tool === "rect" && (
+            <button
+              type="button"
+              onClick={() => setFillRect((v) => !v)}
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors",
+                fillRect
+                  ? "border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]"
+                  : "border-slate-200 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+              )}
+            >
+              <Square size={14} fill={fillRect ? "currentColor" : "none"} /> พื้นทึบ
+            </button>
+          )}
           <Button variant="secondary" onClick={handleUndo}>
             <Undo2 size={14} /> ยกเลิกล่าสุด
           </Button>
