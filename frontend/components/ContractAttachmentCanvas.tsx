@@ -141,7 +141,13 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
   function ContractAttachmentCanvas({ initialImageUrl }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const baseImageRef = useRef<HTMLImageElement | null>(null);
+    // 1 slot (the whole frame) or 2 (stacked top/bottom halves) — which
+    // slot a paste lands in is tracked by activeSlotRef, set from the y
+    // position of whatever was last clicked/dragged on the canvas (see
+    // handlePointerDown), so "click the area you want, then Ctrl+V" keeps
+    // working exactly as before, just per-half instead of whole-frame.
+    const imageSlotsRef = useRef<(HTMLImageElement | null)[]>([null]);
+    const activeSlotRef = useRef(0);
     const annotationsRef = useRef<Annotation[]>([]);
     const draftRef = useRef<DraggableAnnotation | null>(null);
     const drawingRef = useRef(false);
@@ -159,7 +165,8 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
     // can only ever be embedded server-side into generated PDFs, never
     // shipped to the browser for on-canvas rendering here.
     const fontFamilyRef = useRef("sans-serif");
-    const [hasImage, setHasImage] = useState(false);
+    const [layout, setLayout] = useState<1 | 2>(1);
+    const [filledSlots, setFilledSlots] = useState<boolean[]>([false]);
     const [tool, setTool] = useState<Tool>("pen");
     const [textEditor, setTextEditor] = useState<{ cssX: number; cssY: number; canvasX: number; canvasY: number; value: string } | null>(null);
 
@@ -175,17 +182,36 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      const img = baseImageRef.current;
-      if (img) {
-        // "cover" fit — scale up to fill the whole frame and crop the
-        // overflow, instead of "contain" (which left white bars around any
-        // pasted image whose aspect ratio didn't match the canvas). Anything
-        // drawn outside 0..canvas.width/height is clipped by the canvas's
-        // own bounds automatically, so no explicit source-rect crop needed.
-        const scale = Math.max(canvas.width / img.width, canvas.height / img.height);
+      // Layout 1 = one slot covering the whole frame; layout 2 = two slots
+      // stacked top/bottom, each getting half the height.
+      const slotHeight = canvas.height / layout;
+      imageSlotsRef.current.forEach((img, i) => {
+        if (!img) return;
+        const slotY = i * slotHeight;
+        // "cover" fit within this slot's box — scale up to fill it and crop
+        // the overflow, instead of "contain" (which left white bars around
+        // any pasted image whose aspect ratio didn't match the box). Clipped
+        // to the slot's own rect so an oversized image can't bleed into the
+        // other slot.
+        const scale = Math.max(canvas.width / img.width, slotHeight / img.height);
         const w = img.width * scale;
         const h = img.height * scale;
-        ctx.drawImage(img, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, slotY, canvas.width, slotHeight);
+        ctx.clip();
+        ctx.drawImage(img, (canvas.width - w) / 2, slotY + (slotHeight - h) / 2, w, h);
+        ctx.restore();
+      });
+      if (layout === 2) {
+        ctx.save();
+        ctx.strokeStyle = "#cbd5e1";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, slotHeight);
+        ctx.lineTo(canvas.width, slotHeight);
+        ctx.stroke();
+        ctx.restore();
       }
 
       ctx.strokeStyle = STROKE_COLOR;
@@ -214,7 +240,7 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       if (draftRef.current) drawOne(draftRef.current);
     };
 
-    const loadImage = (src: string) => {
+    const loadImageIntoSlot = (index: number, src: string) => {
       const img = new Image();
       // Previously-saved pages load their background from the backend API
       // (a different origin/port than the frontend dev server) — without
@@ -225,19 +251,56 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       // unaffected by this attribute either way.
       img.crossOrigin = "anonymous";
       img.onload = () => {
-        baseImageRef.current = img;
-        setHasImage(true);
+        imageSlotsRef.current[index] = img;
+        setFilledSlots((cur) => {
+          const next = [...cur];
+          next[index] = true;
+          return next;
+        });
         redraw();
       };
       img.src = src;
     };
 
+    // Adding/removing the second slot never touches slot 0's image — only
+    // the split point (redraw's slotHeight) changes. The actual redraw
+    // happens in the effect below, keyed on `layout` — calling redraw()
+    // right here would still close over the pre-update `layout` state
+    // (setState doesn't apply until the next render).
+    const changeLayout = (n: 1 | 2) => {
+      setLayout(n);
+      if (n === 2 && imageSlotsRef.current.length < 2) {
+        imageSlotsRef.current.push(null);
+        setFilledSlots((cur) => [cur[0] ?? false, false]);
+      } else if (n === 1 && imageSlotsRef.current.length > 1) {
+        imageSlotsRef.current = [imageSlotsRef.current[0]];
+        setFilledSlots((cur) => [cur[0] ?? false]);
+        activeSlotRef.current = 0;
+      }
+    };
+
+    const clearSlot = (index: number) => {
+      imageSlotsRef.current[index] = null;
+      setFilledSlots((cur) => {
+        const next = [...cur];
+        next[index] = false;
+        return next;
+      });
+      redraw();
+    };
+
     useEffect(() => {
-      if (initialImageUrl) loadImage(initialImageUrl);
+      if (initialImageUrl) loadImageIntoSlot(0, initialImageUrl);
       // Runs once per mounted page — a page's saved image never changes out
       // from under it after load.
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    // Redraws whenever the slot split changes — see changeLayout's comment.
+    useEffect(() => {
+      redraw();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [layout]);
 
     useImperativeHandle(
       ref,
@@ -251,7 +314,7 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
             }
             canvas.toBlob((blob) => resolve(blob), "image/png");
           }),
-        isEmpty: () => !baseImageRef.current && annotationsRef.current.length === 0,
+        isEmpty: () => imageSlotsRef.current.every((img) => !img) && annotationsRef.current.length === 0,
       }),
       []
     );
@@ -289,6 +352,13 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
     };
 
     const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+      // Whichever half was clicked becomes the paste target (see
+      // handlePaste) — updated on every click regardless of tool, since it's
+      // just bookkeeping and never interferes with drawing.
+      if (layout === 2) {
+        const rect = canvasRef.current!.getBoundingClientRect();
+        activeSlotRef.current = e.clientY - rect.top < rect.height / 2 ? 0 : 1;
+      }
       if (tool === "text") {
         // The canvas itself isn't focusable, so a plain click here would
         // otherwise trigger the browser's default "focus the nearest
@@ -376,7 +446,7 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
       for (const item of Array.from(items)) {
         if (item.type.startsWith("image/")) {
           const file = item.getAsFile();
-          if (file) loadImage(URL.createObjectURL(file));
+          if (file) loadImageIntoSlot(activeSlotRef.current, URL.createObjectURL(file));
           e.preventDefault();
           return;
         }
@@ -425,6 +495,34 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
           <Button variant="secondary" onClick={handleClear}>
             <Trash2 size={14} /> ล้างทั้งหมด
           </Button>
+          <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
+            {([1, 2] as const).map((n) => (
+              <button
+                key={n}
+                type="button"
+                title={n === 1 ? "วางรูปเดียวเต็มกรอบ" : "แบ่งบน-ล่าง วางได้ 2 รูป"}
+                onClick={() => changeLayout(n)}
+                className={cn(
+                  "rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+                  layout === n
+                    ? "bg-[var(--accent)]/10 text-[var(--accent)]"
+                    : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                )}
+              >
+                {n === 1 ? "1 รูป" : "2 รูป (บน-ล่าง)"}
+              </button>
+            ))}
+          </div>
+          {layout === 2 && (
+            <>
+              <Button variant="secondary" onClick={() => clearSlot(0)} disabled={!filledSlots[0]}>
+                <XIcon size={14} /> ล้างรูปบน
+              </Button>
+              <Button variant="secondary" onClick={() => clearSlot(1)} disabled={!filledSlots[1]}>
+                <XIcon size={14} /> ล้างรูปล่าง
+              </Button>
+            </>
+          )}
         </div>
         <div
           ref={containerRef}
@@ -451,12 +549,22 @@ export const ContractAttachmentCanvas = forwardRef<AttachmentCanvasHandle, { ini
             onPointerLeave={stopDrawing}
             className={cn("h-full w-auto touch-none rounded-lg", tool === "text" ? "cursor-text" : "cursor-crosshair")}
           />
-          {!hasImage && (
-            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-slate-400">
-              <ImageOff size={28} />
-              <p className="text-sm">คลิกในกรอบนี้แล้วกด Ctrl+V เพื่อวางรูปภาพที่คัดลอกมา</p>
-            </div>
-          )}
+          {Array.from({ length: layout }, (_, i) => i)
+            .filter((i) => !filledSlots[i])
+            .map((i) => (
+              <div
+                key={i}
+                className={cn(
+                  "pointer-events-none absolute inset-x-0 flex flex-col items-center justify-center gap-2 text-slate-400",
+                  layout === 1 ? "inset-y-0" : i === 0 ? "top-0 h-1/2" : "bottom-0 h-1/2"
+                )}
+              >
+                <ImageOff size={layout === 1 ? 28 : 20} />
+                <p className="text-sm">
+                  คลิก{layout === 2 ? (i === 0 ? "ครึ่งบน" : "ครึ่งล่าง") : "ในกรอบนี้"}แล้วกด Ctrl+V เพื่อวางรูปภาพที่คัดลอกมา
+                </p>
+              </div>
+            ))}
           {textEditor && (
             <input
               autoFocus
