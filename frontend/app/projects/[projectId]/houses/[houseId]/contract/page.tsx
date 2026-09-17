@@ -369,6 +369,32 @@ export default function ContractPage() {
               <Card>
                 <CardHeader title="หัวสัญญา" />
                 <div className="grid grid-cols-1 gap-4 p-5 sm:grid-cols-2">
+                  <div className="sm:col-span-2">
+                    <Field label="ประเภทสัญญา" hint="เลือกฟอร์มสัญญา — ต่างกันแค่ข้อความข้อ 1-N และช่องผู้รับจ้าง">
+                      <div className="flex gap-2">
+                        {(
+                          [
+                            { key: "company" as const, label: "ในนามบริษัท" },
+                            { key: "individual" as const, label: "ในนามบุคคล" },
+                          ]
+                        ).map((t) => (
+                          <button
+                            key={t.key}
+                            type="button"
+                            onClick={() => setField("contract_type", t.key)}
+                            className={
+                              "rounded-md border px-3 py-1.5 text-sm font-medium transition-colors " +
+                              (details.contract_type === t.key
+                                ? "border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]"
+                                : "border-slate-300 text-slate-600 hover:bg-slate-50")
+                            }
+                          >
+                            {t.label}
+                          </button>
+                        ))}
+                      </div>
+                    </Field>
+                  </div>
                   <Field label="บ้านเลขที่ / โครงการ" hint='เช่น "บ้านเลขที่ 9/42 โครงการ The Gentry เกษตร-นวมินทร์"'>
                     <Input
                       value={details.property_description}
@@ -417,24 +443,79 @@ export default function ContractPage() {
               <Card>
                 <CardHeader title="ผู้รับจ้าง" description="ค่าเริ่มต้นมาจากเอกสารสัญญามาตรฐาน แก้ไขได้ถ้าจำเป็น" />
                 <div className="grid grid-cols-1 gap-4 p-5 sm:grid-cols-2">
-                  <Field label="ชื่อบริษัท">
-                    <Input value={details.contractor_name} onChange={(e) => setField("contractor_name", e.target.value)} />
-                  </Field>
-                  <Field label="ผู้ลงนาม (กรรมการผู้มีอำนาจ)">
-                    <Input
-                      value={details.contractor_signatory}
-                      onChange={(e) => setField("contractor_signatory", e.target.value)}
-                    />
-                  </Field>
-                  <Field label="ตำแหน่ง">
-                    <Input value={details.contractor_title} onChange={(e) => setField("contractor_title", e.target.value)} />
-                  </Field>
-                  <Field label="ที่อยู่บริษัท">
-                    <Input
-                      value={details.contractor_address}
-                      onChange={(e) => setField("contractor_address", e.target.value)}
-                    />
-                  </Field>
+                  {details.contract_type === "individual" ? (
+                    <>
+                      <Field label="ผู้ลงนามคนที่ 1 — ชื่อ-นามสกุล">
+                        <Input
+                          value={details.contractor_signatory}
+                          onChange={(e) => setField("contractor_signatory", e.target.value)}
+                        />
+                      </Field>
+                      <Field label="เลขที่บัตรประชาชน">
+                        <Input
+                          value={details.contractor_id_number}
+                          onChange={(e) => setField("contractor_id_number", e.target.value)}
+                        />
+                      </Field>
+                      <div className="sm:col-span-2">
+                        <Field label="ที่อยู่">
+                          <Textarea
+                            rows={2}
+                            value={details.contractor_address}
+                            onChange={(e) => setField("contractor_address", e.target.value)}
+                          />
+                        </Field>
+                      </div>
+                      <Field label="ผู้ลงนามคนที่ 2 (ถ้ามี) — ชื่อ-นามสกุล">
+                        <Input
+                          value={details.contractor_signatory_2}
+                          onChange={(e) => setField("contractor_signatory_2", e.target.value)}
+                        />
+                      </Field>
+                      <Field label="เลขที่บัตรประชาชน">
+                        <Input
+                          value={details.contractor_id_number_2}
+                          onChange={(e) => setField("contractor_id_number_2", e.target.value)}
+                        />
+                      </Field>
+                      <div className="sm:col-span-2">
+                        <Field label="ที่อยู่">
+                          <Textarea
+                            rows={2}
+                            value={details.contractor_address_2}
+                            onChange={(e) => setField("contractor_address_2", e.target.value)}
+                          />
+                        </Field>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <Field label="ชื่อบริษัท">
+                        <Input
+                          value={details.contractor_name}
+                          onChange={(e) => setField("contractor_name", e.target.value)}
+                        />
+                      </Field>
+                      <Field label="ผู้ลงนาม (กรรมการผู้มีอำนาจ)">
+                        <Input
+                          value={details.contractor_signatory}
+                          onChange={(e) => setField("contractor_signatory", e.target.value)}
+                        />
+                      </Field>
+                      <Field label="ตำแหน่ง">
+                        <Input
+                          value={details.contractor_title}
+                          onChange={(e) => setField("contractor_title", e.target.value)}
+                        />
+                      </Field>
+                      <Field label="ที่อยู่บริษัท">
+                        <Input
+                          value={details.contractor_address}
+                          onChange={(e) => setField("contractor_address", e.target.value)}
+                        />
+                      </Field>
+                    </>
+                  )}
                   <div className="sm:col-span-2">
                     <SignatureUploader
                       label="ลายเซ็น (ใช้กับทุกสัญญา)"
@@ -447,42 +528,85 @@ export default function ContractPage() {
                 </div>
               </Card>
 
-              <Card>
-                <CardHeader
-                  title="ข้อ 1 — รายการเฟอร์นิเจอร์อ้างอิง"
-                  description="อ้างอิงลำดับ/หน้าในเอกสารแนบ (เอกสารแนบ (10) และ (17) ในต้นแบบ)"
-                />
-                <div className="grid grid-cols-1 gap-4 p-5 sm:grid-cols-4">
-                  <Field label="รายการที่ (สั่งผลิต)">
-                    <Input
-                      value={details.included_item_range}
-                      onChange={(e) => setField("included_item_range", e.target.value)}
-                      placeholder="เช่น 1"
-                    />
-                  </Field>
-                  <Field label="หน้าเอกสารแนบ">
-                    <Input
-                      value={details.included_item_page}
-                      onChange={(e) => setField("included_item_page", e.target.value)}
-                      placeholder="เช่น (10)"
-                    />
-                  </Field>
-                  <Field label="รายการที่ (ยกเว้น/จัดซื้อเอง)">
-                    <Input
-                      value={details.excluded_item_range}
-                      onChange={(e) => setField("excluded_item_range", e.target.value)}
-                      placeholder="เช่น A-L"
-                    />
-                  </Field>
-                  <Field label="หน้าเอกสารแนบ">
-                    <Input
-                      value={details.excluded_item_page}
-                      onChange={(e) => setField("excluded_item_page", e.target.value)}
-                      placeholder="เช่น (17)"
-                    />
-                  </Field>
-                </div>
-              </Card>
+              {details.contract_type === "individual" ? (
+                <Card>
+                  <CardHeader
+                    title="ข้อ 1, 4, 5, 7 — เอกสารแนบ/ระยะเวลา/งานที่ไม่รวม"
+                    description="ตามฟอร์มสัญญาในนามบุคคล"
+                  />
+                  <div className="grid grid-cols-1 gap-4 p-5 sm:grid-cols-2">
+                    <Field label="จำนวนหน้าเอกสารแนบท้าย (ข้อ 1)">
+                      <Input
+                        value={details.attachment_pages}
+                        onChange={(e) => setField("attachment_pages", e.target.value)}
+                        placeholder="เช่น 7"
+                      />
+                    </Field>
+                    <Field label="ระยะเวลาทำงาน (วัน) (ข้อ 4)">
+                      <Input
+                        value={details.work_duration_days}
+                        onChange={(e) => setField("work_duration_days", e.target.value)}
+                        placeholder="เช่น 60"
+                      />
+                    </Field>
+                    <div className="sm:col-span-2">
+                      <Field label="งานที่ไม่อยู่ในความรับผิดชอบของผู้รับจ้าง (ข้อ 5)">
+                        <Input
+                          value={details.excluded_work_description}
+                          onChange={(e) => setField("excluded_work_description", e.target.value)}
+                          placeholder="เช่น งานติดตั้งตู้เสื้อผ้า"
+                        />
+                      </Field>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <Field label="อ้างอิงเอกสารแนบท้ายสำหรับการรับประกัน (ข้อ 7)">
+                        <Input
+                          value={details.warranty_reference_note}
+                          onChange={(e) => setField("warranty_reference_note", e.target.value)}
+                          placeholder="เช่น (7)"
+                        />
+                      </Field>
+                    </div>
+                  </div>
+                </Card>
+              ) : (
+                <Card>
+                  <CardHeader
+                    title="ข้อ 1 — รายการเฟอร์นิเจอร์อ้างอิง"
+                    description="อ้างอิงลำดับ/หน้าในเอกสารแนบ (เอกสารแนบ (10) และ (17) ในต้นแบบ)"
+                  />
+                  <div className="grid grid-cols-1 gap-4 p-5 sm:grid-cols-4">
+                    <Field label="รายการที่ (สั่งผลิต)">
+                      <Input
+                        value={details.included_item_range}
+                        onChange={(e) => setField("included_item_range", e.target.value)}
+                        placeholder="เช่น 1"
+                      />
+                    </Field>
+                    <Field label="หน้าเอกสารแนบ">
+                      <Input
+                        value={details.included_item_page}
+                        onChange={(e) => setField("included_item_page", e.target.value)}
+                        placeholder="เช่น (10)"
+                      />
+                    </Field>
+                    <Field label="รายการที่ (ยกเว้น/จัดซื้อเอง)">
+                      <Input
+                        value={details.excluded_item_range}
+                        onChange={(e) => setField("excluded_item_range", e.target.value)}
+                        placeholder="เช่น A-L"
+                      />
+                    </Field>
+                    <Field label="หน้าเอกสารแนบ">
+                      <Input
+                        value={details.excluded_item_page}
+                        onChange={(e) => setField("excluded_item_page", e.target.value)}
+                        placeholder="เช่น (17)"
+                      />
+                    </Field>
+                  </div>
+                </Card>
+              )}
 
               <Card>
                 <CardHeader title="ข้อ 2 — ค่าจ้างและงวดชำระ" />

@@ -336,10 +336,19 @@ class QuotationDetails(BaseModel):
 # fields here; the fixed clauses (ข้อ 3-8: ช่างฝีมือ, ความเสียหาย, ดอกเบี้ย
 # 15%, รับประกัน 1 ปี ฯลฯ) are hardcoded in logic.py's PDF generator.
 
+ContractType = Literal["company", "individual"]
+
+
 class ContractDetails(BaseModel):
     # หัวสัญญา — "สำหรับบ้านเลขที่ ... โครงการ ..." / วันที่ทำสัญญา
     property_description: str = ""
     contract_date: str = ""
+
+    # เลือกฟอร์มสัญญา — "company" (default, ผู้รับจ้างเป็นบริษัท ลงนามโดยกรรมการ
+    # ผู้มีอำนาจ) หรือ "individual" (ผู้รับจ้างเป็นบุคคลธรรมดา 1-2 คน มีเลขบัตร
+    # ประชาชน/ที่อยู่ของตัวเอง) — only the ข้อ 1-N wording and signature block
+    # differ between the two; attachments/quotation table stay the same.
+    contract_type: ContractType = "company"
 
     # ผู้ว่าจ้าง
     client_name: str = ""
@@ -347,13 +356,27 @@ class ContractDetails(BaseModel):
     client_address: str = ""
 
     # ผู้รับจ้าง — pre-filled from the template's own boilerplate, editable
-    # per contract in case the signatory/address ever changes.
+    # per contract in case the signatory/address ever changes. contractor_name/
+    # contractor_title only apply to the "company" form; contractor_id_number
+    # and the "_2" fields only apply to the "individual" form (second person
+    # optional, e.g. two co-signing individuals as in the reference template).
     contractor_name: str = "บริษัท เทนดีเค จำกัด"
     contractor_signatory: str = "นางสาวปรีชญา ชวลิตธำรง"
     contractor_title: str = "General Manager"
     contractor_address: str = "141 ซอยสุขุมวิท 63 (เอกมัย) แขวงคลองตันเหนือ เขตวัฒนา กรุงเทพมหานคร"
+    contractor_id_number: str = ""
+    contractor_signatory_2: str = ""
+    contractor_id_number_2: str = ""
+    contractor_address_2: str = ""
 
-    # ข้อ 1 — อ้างอิงรายการเฟอร์นิเจอร์ในเอกสารแนบ (สั่งผลิต vs จัดซื้อเอง)
+    # ข้อ 1 (individual form) — จำนวนหน้าเอกสารแนบท้าย / ระยะเวลาทำงาน / งานที่
+    # ไม่รวม / อ้างอิงเอกสารแนบท้ายสำหรับการรับประกัน
+    attachment_pages: str = ""
+    work_duration_days: str = "60"
+    excluded_work_description: str = ""
+    warranty_reference_note: str = ""
+
+    # ข้อ 1 (company form) — อ้างอิงรายการเฟอร์นิเจอร์ในเอกสารแนบ (สั่งผลิต vs จัดซื้อเอง)
     included_item_range: str = ""  # e.g. "1"
     included_item_page: str = ""  # e.g. "(10)"
     excluded_item_range: str = ""  # e.g. "A-L"

@@ -269,9 +269,15 @@ export interface QuotationDetails {
 // single global asset, see api.uploadContractorSignature).
 export type SignatureRole = "client" | "witness_1" | "witness_2";
 
+export type ContractType = "company" | "individual";
+
 export interface ContractDetails {
   property_description: string;
   contract_date: string;
+
+  // "company" (default — ผู้รับจ้างเป็นบริษัท) or "individual" (ผู้รับจ้างเป็น
+  // บุคคลธรรมดา 1-2 คน) — only the ข้อ 1-N wording and signature block differ.
+  contract_type: ContractType;
 
   client_name: string;
   client_id_number: string;
@@ -281,6 +287,15 @@ export interface ContractDetails {
   contractor_signatory: string;
   contractor_title: string;
   contractor_address: string;
+  // "individual" form only:
+  contractor_id_number: string;
+  contractor_signatory_2: string;
+  contractor_id_number_2: string;
+  contractor_address_2: string;
+  attachment_pages: string;
+  work_duration_days: string;
+  excluded_work_description: string;
+  warranty_reference_note: string;
 
   included_item_range: string;
   included_item_page: string;
