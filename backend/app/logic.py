@@ -1503,31 +1503,6 @@ def _build_quotation_table_story(
                 Paragraph(esc(row.get("remark", "")), body_style),
             ])
 
-    table = Table(table_data, colWidths=_QUOTATION_COL_WIDTHS, repeatRows=1)
-    style_cmds = [
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(_QUOTATION_HEADER_BG)),
-        ("GRID", (0, 0), (-1, -1), 0.75, colors.HexColor(_QUOTATION_GRID_COLOR)),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),
-        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
-        ("ALIGN", (0, 1), (0, -1), "CENTER"),
-        ("ALIGN", (2, 1), (4, -1), "RIGHT"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]
-    for ridx, kind in band_rows:
-        bg = _QUOTATION_FLOOR_BG if kind == "floor" else _QUOTATION_ROOM_BG
-        style_cmds.append(("SPAN", (0, ridx), (-1, ridx)))
-        style_cmds.append(("BACKGROUND", (0, ridx), (-1, ridx), colors.HexColor(bg)))
-        style_cmds.append(("ALIGN", (0, ridx), (-1, ridx), "LEFT"))
-        style_cmds.append(("LEFTPADDING", (0, ridx), (-1, ridx), 6))
-    for ridx in client_row_indices:
-        style_cmds.append(("BACKGROUND", (0, ridx), (-1, ridx), colors.HexColor(_QUOTATION_CLIENT_ROW_BG)))
-    for ridx in letter_row_indices:
-        style_cmds.append(("BACKGROUND", (0, ridx), (-1, ridx), colors.HexColor(_QUOTATION_LETTER_ROW_BG)))
-    table.setStyle(TableStyle(style_cmds))
-    story.append(table)
-
     vat = dk_work_subtotal * 0.07
     grand_total = dk_work_subtotal + vat - (deposit_deduction or 0)
 
@@ -1554,26 +1529,59 @@ def _build_quotation_table_story(
             Paragraph(esc(note), totals_note_style) if note else "",
         ]
 
-    totals_data = [totals_row("Total", dk_work_subtotal, purchase_subtotal), totals_row("Vat 7 %", vat)]
+    # Totals are appended as ordinary rows of the SAME table as the items,
+    # not a second Table flowable — two separate Tables can end up split
+    # across a page break with nothing to fill the gap, leaving a chunk of
+    # blank space between them (the item table ending mid-page, the totals
+    # table pushed whole onto the next page). One continuous table instead
+    # flows/splits at row boundaries like any other row, so it always butts
+    # up directly against the last item row with no gap.
+    totals_start = len(table_data)
+    table_data.append(totals_row("Total", dk_work_subtotal, purchase_subtotal))
+    table_data.append(totals_row("Vat 7 %", vat))
     if deposit_deduction:
-        totals_data.append(totals_row(
+        table_data.append(totals_row(
             "หักค่ามัดจำออกแบบ", deposit_deduction,
             dk_style=totals_value_red_style, label_style=totals_label_red_style,
         ))
-    totals_data.append(totals_row("Grand Total", grand_total, purchase_subtotal, grand_total_note, bold=True))
+    table_data.append(totals_row("Grand Total", grand_total, purchase_subtotal, grand_total_note, bold=True))
+    grand_total_row_idx = len(table_data) - 1
 
-    totals_table = Table(totals_data, colWidths=_QUOTATION_COL_WIDTHS)
-    grand_total_row_idx = len(totals_data) - 1
-    totals_table.setStyle(TableStyle([
-        *[("SPAN", (0, i), (2, i)) for i in range(len(totals_data))],
+    table = Table(table_data, colWidths=_QUOTATION_COL_WIDTHS, repeatRows=1)
+    style_cmds = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(_QUOTATION_HEADER_BG)),
         ("GRID", (0, 0), (-1, -1), 0.75, colors.HexColor(_QUOTATION_GRID_COLOR)),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(_QUOTATION_LETTER_ROW_BG)),
-        ("BACKGROUND", (0, grand_total_row_idx), (-1, grand_total_row_idx), colors.HexColor(_QUOTATION_GRAND_TOTAL_BG)),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("LINEABOVE", (1, grand_total_row_idx), (-1, grand_total_row_idx), 0.75, colors.HexColor(_QUOTATION_GRID_COLOR)),
-    ]))
-    story.append(totals_table)
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),
+        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+        ("ALIGN", (0, 1), (0, -1), "CENTER"),
+        ("ALIGN", (2, 1), (4, -1), "RIGHT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]
+    for ridx, kind in band_rows:
+        bg = _QUOTATION_FLOOR_BG if kind == "floor" else _QUOTATION_ROOM_BG
+        style_cmds.append(("SPAN", (0, ridx), (-1, ridx)))
+        style_cmds.append(("BACKGROUND", (0, ridx), (-1, ridx), colors.HexColor(bg)))
+        style_cmds.append(("ALIGN", (0, ridx), (-1, ridx), "LEFT"))
+        style_cmds.append(("LEFTPADDING", (0, ridx), (-1, ridx), 6))
+    for ridx in client_row_indices:
+        style_cmds.append(("BACKGROUND", (0, ridx), (-1, ridx), colors.HexColor(_QUOTATION_CLIENT_ROW_BG)))
+    for ridx in letter_row_indices:
+        style_cmds.append(("BACKGROUND", (0, ridx), (-1, ridx), colors.HexColor(_QUOTATION_LETTER_ROW_BG)))
+    for ridx in range(totals_start, len(table_data)):
+        style_cmds.append(("SPAN", (0, ridx), (2, ridx)))
+        style_cmds.append(("TOPPADDING", (0, ridx), (-1, ridx), 3))
+        style_cmds.append(("BOTTOMPADDING", (0, ridx), (-1, ridx), 3))
+    style_cmds.append(("BACKGROUND", (0, totals_start), (-1, totals_start), colors.HexColor(_QUOTATION_LETTER_ROW_BG)))
+    style_cmds.append((
+        "BACKGROUND", (0, grand_total_row_idx), (-1, grand_total_row_idx), colors.HexColor(_QUOTATION_GRAND_TOTAL_BG)
+    ))
+    style_cmds.append((
+        "LINEABOVE", (1, grand_total_row_idx), (-1, grand_total_row_idx), 0.75, colors.HexColor(_QUOTATION_GRID_COLOR)
+    ))
+    table.setStyle(TableStyle(style_cmds))
+    story.append(table)
 
     # "รวมงบประมาณ ... (รายการที่ X-Y) = ... บาท" summary lines, one per
     # priced column that actually has rows — the item range is simply
@@ -2336,7 +2344,6 @@ def _add_quotation_table_to_docx(
     vat = dk_work_subtotal * 0.07
     grand_total = dk_work_subtotal + vat - (deposit_deduction or 0)
 
-    doc.add_paragraph()
     totals_rows: list[tuple[str, float | None, float | None, bool, bool]] = [
         ("Total", dk_work_subtotal, purchase_subtotal, False, False),
         ("Vat 7 %", vat, None, False, False),
@@ -2345,16 +2352,14 @@ def _add_quotation_table_to_docx(
         totals_rows.append(("หักค่ามัดจำออกแบบ", deposit_deduction, None, False, True))
     totals_rows.append(("Grand Total", grand_total, purchase_subtotal, True, False))
 
-    # Reuses the item table's exact 6-column layout (label spans cols 0-2,
-    # values sit in cols 3/4, note in col 5) so the totals visually line up
-    # under the item table above them, matching the PDF path's totals_table
-    # (which literally reuses the same colWidths + SPAN(0,i)-(2,i)).
+    # Appended as more rows of the SAME item table (not a separate
+    # doc.add_table()), with no add_paragraph() gap before it — two
+    # separate flowables/tables can otherwise end up with visible dead
+    # space between them; one continuous table always butts the totals
+    # directly against the last item row.
     grand_total_row_idx = len(totals_rows) - 1
-    totals_table = doc.add_table(rows=len(totals_rows), cols=6)
-    totals_table.style = "Table Grid"
-    totals_table.autofit = False
     for i, (label, dk_val, purchase_val, bold, red) in enumerate(totals_rows):
-        row_cells = totals_table.rows[i].cells
+        row_cells = table.add_row().cells
         _set_row_widths(row_cells)
         if i == 0:
             for c in row_cells:
