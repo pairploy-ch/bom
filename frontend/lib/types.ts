@@ -283,20 +283,19 @@ export interface ContractDetails {
   client_id_number: string;
   client_address: string;
 
+  // "company" fields:
   contractor_name: string;
   contractor_signatory: string;
   contractor_title: string;
   contractor_address: string;
-  // "individual" form only:
+  // "individual" form only (contractor_signatory/contractor_address above
+  // are reused as the first person's name/address):
   contractor_id_number: string;
   contractor_signatory_2: string;
   contractor_id_number_2: string;
   contractor_address_2: string;
-  attachment_pages: string;
-  work_duration_days: string;
-  excluded_work_description: string;
-  warranty_reference_note: string;
 
+  // ข้อ 1 — shared; excluded_item_range/page only print in the "company" form.
   included_item_range: string;
   included_item_page: string;
   excluded_item_range: string;
@@ -311,10 +310,13 @@ export interface ContractDetails {
   bank_account_name: string;
   bank_account_number: string;
 
+  // ข้อ 5 — "company" splits delivery into 2 phases; "individual" states one
+  // overall duration range instead (work_duration_days, e.g. "60-90").
   phase_1_rooms: string;
   phase_1_date: string;
   phase_2_rooms: string;
   phase_2_date: string;
+  work_duration_days: string;
   prep_area_days: number;
 
   witness_1_name: string;

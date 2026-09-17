@@ -369,14 +369,9 @@ class ContractDetails(BaseModel):
     contractor_id_number_2: str = ""
     contractor_address_2: str = ""
 
-    # ข้อ 1 (individual form) — จำนวนหน้าเอกสารแนบท้าย / ระยะเวลาทำงาน / งานที่
-    # ไม่รวม / อ้างอิงเอกสารแนบท้ายสำหรับการรับประกัน
-    attachment_pages: str = ""
-    work_duration_days: str = "60"
-    excluded_work_description: str = ""
-    warranty_reference_note: str = ""
-
-    # ข้อ 1 (company form) — อ้างอิงรายการเฟอร์นิเจอร์ในเอกสารแนบ (สั่งผลิต vs จัดซื้อเอง)
+    # ข้อ 1 — อ้างอิงรายการเฟอร์นิเจอร์ในเอกสารแนบ, shared by both forms.
+    # excluded_item_range/page (the "ยกเว้นเฟอร์นิเจอร์ ... ซึ่งผู้ว่าจ้างจะต้อง
+    # ชำระราคาเองตามราคาที่ซื้อจริง" sentence) only prints in the "company" form.
     included_item_range: str = ""  # e.g. "1"
     included_item_page: str = ""  # e.g. "(10)"
     excluded_item_range: str = ""  # e.g. "A-L"
@@ -392,11 +387,15 @@ class ContractDetails(BaseModel):
     bank_account_name: str = "บริษัท เทนดีเค จำกัด"
     bank_account_number: str = "127-2-46763-6"
 
-    # ข้อ 5 — งวดส่งมอบงาน 2 ช่วง
+    # ข้อ 5 — งวดส่งมอบงาน. "company" form splits it into 2 phases
+    # (phase_1_rooms/date, phase_2_rooms/date); "individual" form instead
+    # states one overall duration range (e.g. "60-90") in work_duration_days.
+    # prep_area_days (หน้างานว่างให้ทำงานล่วงหน้า) is shared by both.
     phase_1_rooms: str = ""
     phase_1_date: str = ""
     phase_2_rooms: str = ""
     phase_2_date: str = ""
+    work_duration_days: str = "60-90"
     prep_area_days: int = 30
 
     # ลงชื่อ — พยานฝั่งผู้ว่าจ้าง / ฝั่งผู้รับจ้าง
