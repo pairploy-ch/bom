@@ -907,6 +907,7 @@ _FLOOR_SUFFIX_RE = re.compile(
     r"\d+(?:st|nd|rd|th)\s*Floor"
     r"|Floor\s*\d+"
     r"|Ground\s*Floor"
+    r"|Mezzanine(?:\s*Floor)?"
     r"|Roof(?:top)?(?:\s*Floor)?"
     r"|Basement(?:\s*Floor)?"
     r"|ชั้น(?:ที่)?\s*\S+"
@@ -1087,6 +1088,21 @@ def parse_exported_excel_for_quotation(
         if not item_text:
             if room_val not in (None, ""):
                 current_room = str(room_val).strip()
+            else:
+                # Files never round-tripped through this app's own export
+                # (a hand-maintained pricing sheet, say) sometimes start the
+                # room-header merge at an earlier column instead of
+                # room_col — e.g. the "supplier" column, which is otherwise
+                # always empty on header rows since only item rows carry a
+                # supplier name. Falls back to the first non-empty cell to
+                # the left of the item-name column in that case.
+                for c in range(1, item_idx):
+                    if c == room_idx:
+                        continue
+                    fallback_val = ws.cell(row=r, column=c).value
+                    if fallback_val not in (None, ""):
+                        current_room = str(fallback_val).strip()
+                        break
             continue
 
         item_rows_found += 1
