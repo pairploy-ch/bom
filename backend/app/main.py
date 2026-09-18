@@ -340,7 +340,7 @@ async def upload_contract_attachments(house_id: str, request: Request):
     (base64 slot images for re-editing) which easily exceeds that for a
     2-image page, causing a 400 "Part exceeded maximum size" error."""
     _get_house_or_404(house_id)
-    form = await request.form(max_part_size=25 * 1024 * 1024)
+    form = await request.form(max_part_size=200 * 1024 * 1024)
     pages = form.get("pages", "[]")
     files = form.getlist("files")
     try:

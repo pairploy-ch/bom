@@ -254,17 +254,30 @@ function drawShape(ctx: CanvasRenderingContext2D, a: Extract<Annotation, { kind:
   ctx.fill();
 }
 
+// The editor state's slot images only need to be good enough to keep
+// re-editing (crop/annotate) the page later — the actual exported PDF/DOCX
+// always comes from the separately-uploaded flattened/cropped PNGs, not
+// this blob. Capping resolution and switching to JPEG keeps a 2-slot page's
+// saved state from ballooning into tens of MB of base64 PNG (a pasted
+// screenshot is easily 4000px+ across) and tripping the backend's request
+// size limit.
+const EDITOR_STATE_IMAGE_MAX_DIM = 1600;
+const EDITOR_STATE_IMAGE_QUALITY = 0.82;
+
 // Re-rasterizes a loaded <img> (blob: URL for a freshly pasted image, or a
 // cross-origin backend URL for a previously-saved one) into a data URL so it
 // can be embedded directly in the saved editor state — a plain <img src>
 // pointing at a blob: URL wouldn't survive a reload (the blob is gone), and
 // re-fetching the backend URL later is an extra round trip this avoids.
 function imageToDataUrl(img: HTMLImageElement): string {
+  const naturalW = img.naturalWidth || img.width;
+  const naturalH = img.naturalHeight || img.height;
+  const scale = Math.min(1, EDITOR_STATE_IMAGE_MAX_DIM / Math.max(naturalW, naturalH));
   const c = document.createElement("canvas");
-  c.width = img.naturalWidth || img.width;
-  c.height = img.naturalHeight || img.height;
-  c.getContext("2d")!.drawImage(img, 0, 0);
-  return c.toDataURL("image/png");
+  c.width = Math.round(naturalW * scale);
+  c.height = Math.round(naturalH * scale);
+  c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", EDITOR_STATE_IMAGE_QUALITY);
 }
 
 // Remaps an annotation's coordinates by (sx, sy) — used when the frame is
