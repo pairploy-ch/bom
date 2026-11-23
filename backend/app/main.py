@@ -31,7 +31,9 @@ from .logic import (
     _is_priced_option,
     assign_quotation_labels,
     build_quotation_rows,
+    calculate_alt_loading_factor,
     compute_price_preview,
+    extract_alt_batch_info,
     extract_furniture_list,
     extract_text_from_pdf,
     flag_suspicious_prices,
@@ -142,6 +144,15 @@ def _get_house_or_404(house_id: str):
     return row
 
 
+def _get_alt_batch_info(house_id: str, row: dict[str, Any], *, has_alt_quote: bool = True) -> dict[str, Any] | None:
+    value = row.get("alt_batch_info")
+    if value:
+        return json.loads(value)
+    if has_alt_quote:
+        return extract_alt_batch_info(db.get_quotation_text(house_id, "ALT"))
+    return None
+
+
 def _house_state(house_id: str) -> HouseState:
     row = _get_house_or_404(house_id)
     furniture = db.get_furniture_items(house_id)
@@ -157,7 +168,7 @@ def _house_state(house_id: str) -> HouseState:
         target_sheet_name=row["target_sheet_name"],
         furniture_list=furniture,
         mapping_rows=mapping,
-        alt_batch_info=json.loads(row["alt_batch_info"]) if row["alt_batch_info"] else None,
+        alt_batch_info=_get_alt_batch_info(house_id, row, has_alt_quote="ALT" in quotation_buckets),
         baseline_furniture_value=row["baseline_furniture_value"],
         quotation_buckets=quotation_buckets,
         has_final_export=row["final_excel_bytes"] is not None,
@@ -678,7 +689,9 @@ def preview_prices(house_id: str, body: PreviewRequest):
     if row["excel_bytes"] is None:
         raise HTTPException(400, "Upload the Excel template (Step 1) first.")
     rows = [r.model_dump(exclude={"suspicious"}) for r in body.rows]
-    return compute_price_preview(row["excel_bytes"], rows, _col_map(body.column_mapping), body.sheet_name)
+    return compute_price_preview(
+        row["excel_bytes"], rows, _col_map(body.column_mapping), body.sheet_name, _get_alt_batch_info(house_id, row),
+    )
 
 
 @app.post("/api/houses/{house_id}/loading-factor", response_model=LoadingFactorResponse)
@@ -690,7 +703,7 @@ def apply_loading_factor(house_id: str, body: LoadingFactorRequest):
         raise HTTPException(422, "sum_of_item_costs must be greater than 0.")
 
     col_map = _col_map(body.column_mapping)
-    loading_factor = (body.sum_of_item_costs + body.protection_fee + body.management_fee) / body.sum_of_item_costs
+    loading_factor = calculate_alt_loading_factor(body.sum_of_item_costs, body.protection_fee, body.management_fee)
 
     wb = load_workbook_from_bytes(row["excel_bytes"])
     if body.sheet_name not in wb.sheetnames:
@@ -770,6 +783,7 @@ def export_excel(house_id: str, body: ExportRequest):
         raise HTTPException(400, "Upload the Excel template (Step 1) first.")
 
     rows = [r.model_dump(exclude={"suspicious"}) for r in body.rows]
+    alt_batch_info = _get_alt_batch_info(house_id, row)
     result_bytes, warnings = write_mapping_to_excel(
         row["excel_bytes"],
         body.sheet_name,
@@ -777,8 +791,9 @@ def export_excel(house_id: str, body: ExportRequest):
         _col_map(body.column_mapping),
         furniture_total=body.furniture_total,
         baseline_furniture_value=body.baseline_furniture_value,
+        alt_batch_info=alt_batch_info,
     )
-    source_hash = _current_export_source_hash(row["excel_bytes"], rows)
+    source_hash = _current_export_source_hash(row["excel_bytes"], rows, alt_batch_info)
     db.update_final_export(house_id, result_bytes, source_hash)
     filename = f"completed_{row['excel_filename'] or 'BOM.xlsx'}"
     db.save_export_version(house_id, filename, result_bytes, source_hash)
@@ -793,7 +808,7 @@ def export_status(house_id: str, body: MappingRowsReplace):
     if row["final_excel_bytes"] is None:
         return ExportStatus(has_export=False, is_stale=False)
     rows = [r.model_dump(exclude={"suspicious"}) for r in body.rows]
-    current_hash = _current_export_source_hash(row["excel_bytes"], rows)
+    current_hash = _current_export_source_hash(row["excel_bytes"], rows, _get_alt_batch_info(house_id, row))
     return ExportStatus(
         has_export=True,
         is_stale=current_hash != row["final_excel_source_hash"],
@@ -869,7 +884,9 @@ def preview_quotation_from_house(house_id: str, body: QuotationBuildRequest):
     if row["excel_bytes"] is None:
         raise HTTPException(400, "Upload the Excel template (Step 1) first.")
     rows = [r.model_dump(exclude={"suspicious"}) for r in body.rows]
-    preview = compute_price_preview(row["excel_bytes"], rows, _col_map(body.column_mapping), body.sheet_name)
+    preview = compute_price_preview(
+        row["excel_bytes"], rows, _col_map(body.column_mapping), body.sheet_name, _get_alt_batch_info(house_id, row),
+    )
     quotation_rows, row_warnings, has_fixed_labels = build_quotation_rows(preview["rows"])
     dk_work_subtotal, purchase_subtotal, vat, grand_total = _quotation_totals(quotation_rows)
     return QuotationPreview(

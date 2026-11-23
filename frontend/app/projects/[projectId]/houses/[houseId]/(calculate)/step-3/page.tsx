@@ -23,7 +23,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useParams } from "next/navigation";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { useHouse, houseKey } from "@/hooks/useHouse";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -136,6 +136,10 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
   });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: houseKey(houseId) });
+  const refreshPriceCalculations = () => {
+    queryClient.invalidateQueries({ queryKey: ["preview", houseId] });
+    queryClient.invalidateQueries({ queryKey: ["export-status", houseId] });
+  };
 
   useEffect(() => {
     if (!rowsDirty) return;
@@ -151,14 +155,16 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
     onSuccess: (res) => {
       setRows(res.mapping_rows);
       setRowsDirty(false);
-      if (res.alt_batch_info) {
+      if (res.matched_buckets.includes("ALT")) {
+        setAltTouched(false);
         setAltInputs({
-          sum: res.alt_batch_info.sum_of_item_costs || 0,
-          protection: res.alt_batch_info.protection_fee || 0,
-          management: res.alt_batch_info.management_fee || 0,
+          sum: res.alt_batch_info?.sum_of_item_costs ?? 0,
+          protection: res.alt_batch_info?.protection_fee ?? 0,
+          management: res.alt_batch_info?.management_fee ?? 0,
         });
       }
       invalidate();
+      refreshPriceCalculations();
       toast.success(`Matched against ${res.matched_buckets.length} batch(es): ${res.matched_buckets.join(", ")}.`);
       res.warnings.forEach((w) => toast.warning(w));
       setFiles({ alt: [], pmay: [], other: [], purchase: [] });
@@ -225,6 +231,7 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
   });
 
   const grandTotal = preview.data ? previewGrandTotal(preview.data.rows) : 0;
+  const hasAltPrice = preview.data?.rows.some((row) => row.g_cost != null) ?? false;
   // If the user hasn't typed a baseline (the furniture value from the very
   // first quotation) yet, fall back to the current 10DK Price grand total so
   // the 12% fee still computes instead of blocking on a warning. The typed
@@ -245,7 +252,7 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
       api.applyLoadingFactor(houseId, sheetName, altInputs.sum, altInputs.protection, altInputs.management, columnMapping),
     onSuccess: (res) => {
       invalidate();
-      preview.refetch();
+      refreshPriceCalculations();
       if (res.updated) {
         toast.success(`คำนวณใหม่และอัปเดต ${res.anchor_cell} = ${res.current_value} ให้อัตโนมัติแล้ว`);
       }
@@ -265,10 +272,8 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
   }, [altTouched, debouncedAltInputs]);
 
   // ----------------------------------------------------- I / M multipliers --
-  // Unlike Loading Factor (H, computed per-house from the ALT quotation's
-  // own numbers), I ("+5%+VAT7%") and M (10DK profit) are fixed business
-  // constants that must live in the Excel template — these just write
-  // whatever the user types directly into the I5/M5 anchor cells.
+  const vatAnchor = `${columnMapping.formula_i_col}${columnMapping.multiplier_anchor_row}`;
+  const profitAnchor = `${columnMapping.formula_m_col}${columnMapping.multiplier_anchor_row}`;
 
   const [iFeePercent, setIFeePercent] = useState(5);
   const [iVatPercent, setIVatPercent] = useState(7);
@@ -281,7 +286,7 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
       api.setMultiplier(houseId, sheetName, vars.column, vars.value, columnMapping),
     onSuccess: (res) => {
       invalidate();
-      preview.refetch();
+      refreshPriceCalculations();
       if (res.updated) {
         toast.success(`อัปเดต ${res.anchor_cell} = ${res.current_value} ให้อัตโนมัติแล้ว`);
       }
@@ -306,38 +311,6 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
     if (!Number.isNaN(v) && v > 0) setMultiplier.mutate({ column: "m", value: v });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mTouched, debouncedMMultiplierInput]);
-
-  // If the template is missing H5/I5/M5, write whatever value is already on
-  // screen straight away instead of waiting for the user to click into a
-  // field just to fire its onBlur handler. H has no fixed default — it only
-  // fires once the AI extraction has actually produced alt_batch_info
-  // numbers (altInputs.sum > 0); I/M fall back to the fixed 5%+7% => 1.1235
-  // and 1.45 defaults shown in the card.
-  const autoFilledMultiplier = useRef({ h: false, i: false, m: false });
-  useEffect(() => {
-    if (!sheetName) return;
-    const warnings = preview.data?.warnings ?? [];
-    if (
-      !autoFilledMultiplier.current.h &&
-      altInputs.sum > 0 &&
-      warnings.some((w) => w.includes("(Loading Factor ALT)"))
-    ) {
-      autoFilledMultiplier.current.h = true;
-      applyLoadingFactor.mutate();
-    }
-    if (!autoFilledMultiplier.current.i && warnings.some((w) => w.includes("(ตัวคูณ +5%+VAT7%)"))) {
-      autoFilledMultiplier.current.i = true;
-      setMultiplier.mutate({ column: "i", value: iMultiplier });
-    }
-    if (!autoFilledMultiplier.current.m && warnings.some((w) => w.includes("(ตัวคูณกำไร 10DK)"))) {
-      const m = parseFloat(mMultiplierInput);
-      if (!Number.isNaN(m) && m > 0) {
-        autoFilledMultiplier.current.m = true;
-        setMultiplier.mutate({ column: "m", value: m });
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheetName, preview.data?.warnings]);
 
   // ---------------------------------------------------------- baseline --
 
@@ -453,12 +426,12 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
 
       {rows.length > 0 && (
         <>
-          {altInputs.sum > 0 && (
+          {(altInputs.sum > 0 || hasAltPrice) && (
             <Card>
               <CardHeader icon={<Ruler size={16} />} title="Loading Factor (ALT) — แก้ไขค่าได้ที่นี่" />
               <div className="space-y-4 p-5">
                 <p className="text-xs text-slate-500">
-                  ค่าเริ่มต้นดึงมาจาก AI อ่านใบเสนอราคา ALT — แก้ไขได้ทุกช่องถ้า AI อ่านผิด หรืออยากปรับเอง
+                  ระบบดึงยอดจากใบเสนอราคา ALT ให้เมื่ออ่านข้อมูลได้ครบ คุณกรอกหรือแก้ยอดได้ที่นี่
                 </p>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                   <Field label="ผลรวมต้นทุนรายการ (บาท)">
@@ -481,7 +454,7 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                       }}
                     />
                   </Field>
-                  <Field label="ค่าดำเนินการ 10% (บาท)">
+                  <Field label="ค่าดำเนินการ (บาท)">
                     <Input
                       type="number"
                       value={altInputs.management}
@@ -511,12 +484,12 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
           <Card>
             <CardHeader
               icon={<Settings size={16} />}
-              title="ตัวคูณ I / M ในไฟล์ Excel"
-              description="ค่าคงที่ของธุรกิจ (ไม่ได้คำนวณจากใบเสนอราคาเหมือน Loading Factor) — ต้องมีอยู่ในไฟล์เทมเพลตเสมอ ถ้า preview ฟ้องว่าไม่พบตัวเลขที่ช่องนี้ ให้กรอกที่นี่แล้วระบบจะเขียนเข้าไฟล์ให้"
+              title="ตัวคูณในไฟล์ Excel"
+              description="ถ้าช่องตัวคูณในเทมเพลตว่าง ระบบใช้ 1.1235 และ 1.45 ให้โดยอัตโนมัติ"
             />
             <div className="space-y-5 p-5">
               <div>
-                <p className="mb-2 text-sm font-medium text-slate-700">ตัวคูณ +5%+VAT7% (ช่อง I) — ไม่ใช่ตัวเดียวกับ Loading Factor</p>
+                <p className="mb-2 text-sm font-medium text-slate-700">ตัวคูณ +5%+VAT7% (ช่อง {vatAnchor})</p>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                   <Field label="ค่าธรรมเนียม/กำไร (%)">
                     <Input
@@ -539,14 +512,14 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                     />
                   </Field>
                   <div>
-                    <p className="text-xs text-slate-400">ตัวคูณที่จะเขียนลงช่อง I</p>
+                    <p className="text-xs text-slate-400">ตัวคูณที่จะเขียนลงช่อง {vatAnchor}</p>
                     <p className="text-lg font-semibold tabular-nums">{iMultiplier.toFixed(4)}</p>
                   </div>
                 </div>
               </div>
 
               <div>
-                <p className="mb-2 text-sm font-medium text-slate-700">ตัวคูณกำไร 10DK (ช่อง M)</p>
+                <p className="mb-2 text-sm font-medium text-slate-700">ตัวคูณกำไร 10DK (ช่อง {profitAnchor})</p>
                 <Field label="ใส่ตัวคูณตรงๆ — ค่าเริ่มต้น 1.45 (กำไร 45%)" hint="แก้ไขได้ถ้างานนี้ใช้ % ต่างจากปกติ">
                   <Input
                     type="number"

@@ -24,8 +24,10 @@ import logging
 import math
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from unicodedata import normalize
 from xml.sax.saxutils import escape as xml_escape
 
 import anthropic
@@ -39,6 +41,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Mm, Pt, RGBColor
 from openai import APIError, APITimeoutError, OpenAI, RateLimitError
+from openpyxl.cell import MergedCell
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.exceptions import InvalidFileException
@@ -113,6 +116,8 @@ ROOM_HEADER_FONT = Font(color="FFFFFFFF", bold=True)
 # Whole-baht display for every price/formula cell write_mapping_to_excel writes —
 # the underlying value/formula keeps full precision, this only hides the decimals.
 MONEY_FORMAT = "#,##0"
+DEFAULT_VAT_MULTIPLIER = 1.1235
+DEFAULT_10DK_MULTIPLIER = 1.45
 
 
 @dataclass
@@ -392,11 +397,18 @@ def extract_text_from_pdf(file_bytes: bytes) -> tuple[str, str | None]:
         raise LogicError(f"❌ Failed to read PDF: {e}") from e
 
 
-def _current_export_source_hash(excel_bytes: bytes | None, mapping_rows: list[dict[str, Any]]) -> str:
+def _current_export_source_hash(
+    excel_bytes: bytes | None,
+    mapping_rows: list[dict[str, Any]],
+    alt_batch_info: dict[str, Any] | None = None,
+) -> str:
     """Fingerprints everything that affects the exported file, to detect a stale download."""
     h = hashlib.md5()
     h.update(excel_bytes or b"")
     h.update(json.dumps(mapping_rows, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8"))
+    loading_factor = _alt_loading_factor_from_batch(alt_batch_info)
+    if loading_factor is not None:
+        h.update(f"|alt-loading-factor={loading_factor}".encode("ascii"))
     return h.hexdigest()
 
 
@@ -472,12 +484,11 @@ def write_mapping_to_excel(
     col_map: ColumnMapping,
     furniture_total: float | None = None,
     baseline_furniture_value: float | None = None,
+    alt_batch_info: dict[str, Any] | None = None,
 ) -> tuple[bytes, list[str]]:
     """
-    Appends new Room-section headers + item rows below the last used row of
-    the template. Identical logic to the original app.py's
-    write_mapping_to_excel — see there for the full column-by-column and
-    formula-chain rationale. Returns (workbook_bytes, warnings).
+    Appends room headers and item rows with the pricing formulas. Fills
+    available multiplier defaults in the exported copy.
     """
     wb = load_workbook_from_bytes(file_bytes)
     warnings: list[str] = []
@@ -503,6 +514,11 @@ def write_mapping_to_excel(
         q_idx = column_index_from_string(col_map.formula_additional_item_col)
         r_idx = column_index_from_string(col_map.formula_purchase_compare_col)
         anchor = col_map.multiplier_anchor_row
+        h_ref = _excel_multiplier_reference(
+            ws, col_map.formula_h_col, anchor, _alt_loading_factor_from_batch(alt_batch_info),
+        )
+        i_ref = _excel_multiplier_reference(ws, col_map.formula_i_col, anchor, DEFAULT_VAT_MULTIPLIER)
+        m_ref = _excel_multiplier_reference(ws, col_map.formula_m_col, anchor, DEFAULT_10DK_MULTIPLIER)
 
         room_header_min_col = min(
             supplier_idx, room_idx, item_idx, qty_idx, custom_price_idx, purchased_price_idx,
@@ -578,21 +594,22 @@ def write_mapping_to_excel(
                     if alt_price > 0:
                         ws.cell(row=r, column=custom_price_idx).value = alt_price
                         ws.cell(row=r, column=custom_price_idx).number_format = MONEY_FORMAT
-                        if col_map.generate_formulas:
-                            ws.cell(row=r, column=h_idx).value = f"={col_map.custom_made_price_col}{r}*{col_map.formula_h_col}${anchor}"
+                        if col_map.generate_formulas and h_ref is not None:
+                            ws.cell(row=r, column=h_idx).value = f"={col_map.custom_made_price_col}{r}*{h_ref}"
                             ws.cell(row=r, column=h_idx).number_format = MONEY_FORMAT
-                            ws.cell(row=r, column=i_idx).value = f"={col_map.formula_h_col}{r}*{col_map.formula_i_col}${anchor}"
+                            ws.cell(row=r, column=i_idx).value = f"={col_map.formula_h_col}{r}*{i_ref}"
                             ws.cell(row=r, column=i_idx).number_format = MONEY_FORMAT
                     if pmay_price > 0:
-                        ws.cell(row=r, column=j_idx).value = f"=({pmay_price}*{col_map.formula_i_col}${anchor})"
+                        ws.cell(row=r, column=j_idx).value = f"=({pmay_price}*{i_ref})"
                         ws.cell(row=r, column=j_idx).number_format = MONEY_FORMAT
                     if other_maker_price > 0:
-                        ws.cell(row=r, column=k_idx).value = f"=({other_maker_price}*{col_map.formula_i_col}${anchor})"
+                        ws.cell(row=r, column=k_idx).value = f"=({other_maker_price}*{i_ref})"
                         ws.cell(row=r, column=k_idx).number_format = MONEY_FORMAT
-                    if col_map.generate_formulas and (alt_price > 0 or pmay_price > 0 or other_maker_price > 0):
+                    has_priced_option = pmay_price > 0 or other_maker_price > 0 or (alt_price > 0 and h_ref is not None)
+                    if col_map.generate_formulas and has_priced_option:
                         ws.cell(row=r, column=l_idx).value = f"=MAX({col_map.formula_i_col}{r}:{k_col}{r})"
                         ws.cell(row=r, column=l_idx).number_format = MONEY_FORMAT
-                        ws.cell(row=r, column=m_idx).value = f"=ROUNDUP({col_map.formula_l_col}{r}*{col_map.formula_m_col}${anchor},-3)"
+                        ws.cell(row=r, column=m_idx).value = f"=ROUNDUP({col_map.formula_l_col}{r}*{m_ref},-3)"
                         ws.cell(row=r, column=m_idx).number_format = MONEY_FORMAT
                         ws.cell(row=r, column=q_idx).value = f"={col_map.formula_m_col}{r}"
                         ws.cell(row=r, column=q_idx).number_format = MONEY_FORMAT
@@ -603,11 +620,11 @@ def write_mapping_to_excel(
                         ws.cell(row=current_row, column=supplier_idx).value = supplier
                     if col_map.generate_formulas:
                         r = current_row
-                        ws.cell(row=r, column=k_idx).value = f"=({unit_price}*{col_map.formula_i_col}${anchor})"
+                        ws.cell(row=r, column=k_idx).value = f"=({unit_price}*{i_ref})"
                         ws.cell(row=r, column=k_idx).number_format = MONEY_FORMAT
                         ws.cell(row=r, column=l_idx).value = f"=MAX({col_map.formula_i_col}{r}:{k_col}{r})"
                         ws.cell(row=r, column=l_idx).number_format = MONEY_FORMAT
-                        ws.cell(row=r, column=m_idx).value = f"=ROUNDUP({col_map.formula_l_col}{r}*{col_map.formula_m_col}${anchor},-3)"
+                        ws.cell(row=r, column=m_idx).value = f"=ROUNDUP({col_map.formula_l_col}{r}*{m_ref},-3)"
                         ws.cell(row=r, column=m_idx).number_format = MONEY_FORMAT
                         ws.cell(row=r, column=q_idx).value = f"={col_map.formula_m_col}{r}"
                         ws.cell(row=r, column=q_idx).number_format = MONEY_FORMAT
@@ -717,23 +734,80 @@ def read_anchor_value(ws, col_letter: str, anchor_row: int) -> float | None:
     return None
 
 
-def compute_price_preview(
-    excel_bytes: bytes, rows: list[dict[str, Any]], col_map: ColumnMapping, sheet_name: str
-) -> dict[str, Any]:
-    """
-    Replicates the Excel formula chain in pure Python, so the review table
-    can show real computed numbers before anything is written to the file.
-    Same as the original, except `excel_bytes` is now a parameter instead of
-    being read from `st.session_state` directly.
+def calculate_alt_loading_factor(sum_of_item_costs: float, protection_fee: float, management_fee: float) -> float:
+    return (sum_of_item_costs + protection_fee + management_fee) / sum_of_item_costs
 
-    Returns {"rows": [...], "warnings": [...]}. The H/I/M anchor cells (the
-    Loading Factor, the "+5%+VAT7%" multiplier, and the 10DK profit
-    multiplier) must already contain a number or a simple arithmetic formula
-    in the uploaded Excel template — if one is missing, every downstream
-    column that depends on it comes back empty, which is confusing with no
-    explanation, so that's surfaced here as an explicit warning instead of a
-    silently blank table.
-    """
+
+def _alt_loading_factor_from_batch(alt_batch_info: dict[str, Any] | None) -> float | None:
+    if not alt_batch_info:
+        return None
+    try:
+        total = float(alt_batch_info["sum_of_item_costs"])
+        protection = float(alt_batch_info["protection_fee"])
+        management = float(alt_batch_info["management_fee"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    factor = calculate_alt_loading_factor(total, protection, management)
+    return round(factor, 4) if math.isfinite(factor) and factor > 0 else None
+
+
+_ALT_MONEY = r"(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)\.[0-9]{2}"
+_ALT_PROTECTION = re.compile(rf"^[ \t]*(?:[0-9]+[ \t]+)?ค่า[ \t]*Protection\b[^\n]*[ \t]+({_ALT_MONEY})[ \t]*$", re.M | re.I)
+_ALT_MANAGEMENT = re.compile(rf"^[ \t]*(?:[0-9]+[ \t]+)?ค่า[ \t]*ดําเนินการ[ \t]*([0-9]+(?:\.[0-9]+)?)[ \t]*%[ \t]+({_ALT_MONEY})[ \t]*$", re.M)
+_ALT_NET_BEFORE_VAT = re.compile(rf"^[ \t]*มูลค่าสินค้าสุทธิ[ \t]*:?[ \t]*(?:\n[ \t]*)?({_ALT_MONEY})[ \t]*$", re.M)
+
+
+def extract_alt_batch_info(supplier_text: str) -> dict[str, float] | None:
+    """Reads the totals from a single ALT quote with the standard net-before-VAT footer."""
+    if supplier_text.count("===== Supplier document:") > 1:
+        return None
+    text = normalize("NFKC", supplier_text).replace("\r\n", "\n")
+    matches = [list(pattern.finditer(text)) for pattern in (_ALT_PROTECTION, _ALT_MANAGEMENT, _ALT_NET_BEFORE_VAT)]
+    if not all(len(group) == 1 for group in matches):
+        return None
+    protection, management, net = (group[0] for group in matches)
+    if not protection.start() < management.start() < net.start():
+        return None
+
+    protection_fee = Decimal(protection[1].replace(",", ""))
+    management_fee = Decimal(management[2].replace(",", ""))
+    net_before_vat = Decimal(net[1].replace(",", ""))
+    management_rate = Decimal(management[1]) / 100
+    item_costs = net_before_vat - management_fee - protection_fee
+    # Confirm that the printed subtotal includes the handling fee before
+    # subtracting the fees from that subtotal to recover the items-only cost.
+    if item_costs <= 0 or abs(management_fee - (net_before_vat - management_fee) * management_rate) > Decimal("0.02"):
+        return None
+    return {
+        "sum_of_item_costs": float(item_costs),
+        "protection_fee": float(protection_fee),
+        "management_fee": float(management_fee),
+    }
+
+
+def _excel_multiplier_reference(ws, column: str, anchor_row: int, fallback: float | None) -> str | None:
+    reference = f"{column}${anchor_row}"
+    cell = ws[f"{column}{anchor_row}"]
+    if cell.data_type == "f" or read_anchor_value(ws, column, anchor_row) is not None:
+        return reference
+    if fallback is None:
+        return None
+    if isinstance(cell, MergedCell) or cell.value not in (None, ""):
+        return str(fallback)
+    cell.value = fallback
+    return reference
+
+
+def compute_price_preview(
+    excel_bytes: bytes,
+    rows: list[dict[str, Any]],
+    col_map: ColumnMapping,
+    sheet_name: str,
+    alt_batch_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Replicates the Excel formula chain for the review table."""
     wb = load_workbook_from_bytes(excel_bytes)
     preview: list[dict[str, Any]] = []
     ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
@@ -741,6 +815,12 @@ def compute_price_preview(
     h_mult = read_anchor_value(ws, col_map.formula_h_col, col_map.multiplier_anchor_row)
     i_mult = read_anchor_value(ws, col_map.formula_i_col, col_map.multiplier_anchor_row)
     m_mult = read_anchor_value(ws, col_map.formula_m_col, col_map.multiplier_anchor_row)
+    if h_mult is None:
+        h_mult = _alt_loading_factor_from_batch(alt_batch_info)
+    if i_mult is None:
+        i_mult = DEFAULT_VAT_MULTIPLIER
+    if m_mult is None:
+        m_mult = DEFAULT_10DK_MULTIPLIER
 
     def roundup_thousand(x: float) -> float:
         return math.ceil(x / 1000.0) * 1000.0
@@ -777,27 +857,27 @@ def compute_price_preview(
             if alt_price > 0:
                 g = alt_price
                 h = g * h_mult if h_mult is not None else None
-                i_val = h * i_mult if (h is not None and i_mult is not None) else None
+                i_val = h * i_mult if h is not None else None
                 out.update({"g_cost": g, "h_loading": h, "i_plus_vat": i_val})
 
             j_val = None
             if pmay_price > 0:
-                j_val = pmay_price * i_mult if i_mult is not None else None
+                j_val = pmay_price * i_mult
                 out.update({"j_pmay": j_val})
 
             k_val = None
             if other_maker_price > 0:
-                k_val = other_maker_price * i_mult if i_mult is not None else None
+                k_val = other_maker_price * i_mult
                 out.update({"k_other": k_val})
 
             candidates = [v for v in (i_val, j_val, k_val) if v is not None]
             l = max(candidates) if candidates else None
-            m = roundup_thousand(l * m_mult) if (l is not None and m_mult is not None) else None
+            m = roundup_thousand(l * m_mult) if l is not None else None
             out.update({"l_chosen": l, "m_10dk_price": m})
         elif order_type == "จัดซื้อ (บวกกำไร 10DK)":
-            k = unit_price * i_mult if i_mult is not None else None
+            k = unit_price * i_mult
             l = k
-            m = roundup_thousand(l * m_mult) if (l is not None and m_mult is not None) else None
+            m = roundup_thousand(l * m_mult)
             out.update({"k_other": k, "l_chosen": l, "m_10dk_price": m})
         else:
             out.update({"n_actual_price": unit_price})
@@ -809,24 +889,10 @@ def compute_price_preview(
         preview.append(out)
 
     warnings: list[str] = []
-    needs_h = any(r.get("order_type") == "สั่งผลิต" for r in rows)
-    needs_i_m = any(r.get("order_type") in ("สั่งผลิต", "จัดซื้อ (บวกกำไร 10DK)") for r in rows)
-    anchor = col_map.multiplier_anchor_row
-    if needs_h and h_mult is None:
+    if h_mult is None and any("g_cost" in row for row in preview):
         warnings.append(
-            f"⚠️ ไม่พบตัวเลขที่ช่อง {col_map.formula_h_col}{anchor} ในไฟล์ Excel (Loading Factor ALT) — "
-            f"คอลัมน์ 'ALT+ค่า protect+ค่าขน' และคอลัมน์ที่คำนวณต่อจากมันจะว่างจนกว่าจะมีค่านี้ "
-            f"(ถ้ายังไม่ได้กด ลองกรอก/กด apply ที่การ์ด 'Loading Factor (ALT)' ด้านบนก่อน)"
-        )
-    if needs_i_m and i_mult is None:
-        warnings.append(
-            f"⚠️ ไม่พบตัวเลขที่ช่อง {col_map.formula_i_col}{anchor} ในไฟล์ Excel (ตัวคูณ +5%+VAT7%) — "
-            f"กรุณากรอกค่านี้ในไฟล์เทมเพลตก่อน คอลัมน์ที่เกี่ยวข้อง (I, J, K) จะว่างจนกว่าจะกรอก"
-        )
-    if needs_i_m and m_mult is None:
-        warnings.append(
-            f"⚠️ ไม่พบตัวเลขที่ช่อง {col_map.formula_m_col}{anchor} ในไฟล์ Excel (ตัวคูณกำไร 10DK) — "
-            f"คอลัมน์ '10DK Price' จะว่างจนกว่าจะกรอกค่านี้ในไฟล์เทมเพลต"
+            f"ยังไม่มี Loading Factor ALT ที่ช่อง {col_map.formula_h_col}{col_map.multiplier_anchor_row} "
+            "กรอกต้นทุนรวม ค่า Protection และค่าดำเนินการในการ์ด Loading Factor (ALT) เพื่อคำนวณราคา ALT"
         )
 
     return {"rows": preview, "warnings": warnings}
@@ -2972,17 +3038,16 @@ def build_price_matching_system_prompt(fixed_supplier: str | None) -> str:
         alt_info_clause = (
             "\n- SEPARATELY, look at the LAST line item(s) in this ALT quotation (usually near "
             'the end, after the item list) for THREE specific numbers, each printed as an actual '
-            "baht figure in the document (do NOT calculate or estimate these — only report a "
-            "number if you see it explicitly printed):\n"
+            "baht figure in the document. Read the fees exactly as printed:\n"
             '  1. The total/sum of all furniture item costs in this quote (before any surcharge)\n'
             '  2. "ค่า Protection พื้น" (floor protection fee) — a separate baht amount\n'
-            '  3. "ค่าดำเนินการ 10%" (10% management/handling fee) — this is ALSO printed as an '
-            "actual baht amount in the document (not just a percentage label), since it's 10% "
-            "of some base value already computed by the supplier — extract that printed number.\n"
+            '  3. "ค่าดำเนินการ" (management/handling fee) — the percentage varies by quotation. '
+            "Extract the baht amount printed on that line.\n"
             'Report them in "alt_batch_info": {"sum_of_item_costs": <number>, '
-            '"protection_fee": <number>, "management_fee": <number>}. If any of these three '
-            'aren\'t explicitly stated as numbers in the text, set "alt_batch_info" to null '
-            "(do not guess or calculate missing values)."
+            '"protection_fee": <number>, "management_fee": <number>}. If the only printed subtotal '
+            'is "มูลค่าสินค้าสุทธิ" before VAT and it includes both fees, subtract both fees to recover '
+            '"sum_of_item_costs". If the two fees or the cost basis cannot be confirmed, set '
+            '"alt_batch_info" to null.'
         )
 
     return f"""You are a procurement assistant. You will be given:
@@ -3054,7 +3119,7 @@ output row, so results can be merged back to the correct item afterward.{alt_inf
 
 Return a JSON object with "mapped_items" and "alt_batch_info". Use an empty array for \
 "mapped_items" if there are no confident matches. Use null for "alt_batch_info" unless this \
-is an ALT batch and all three amounts are stated explicitly.
+is an ALT batch and the amounts can be confirmed using the ALT instructions above.
 {{
   "mapped_items": [
     {{"index": 0, "unit_price": 350.00, "supplier": "ABC Furniture Co.", \
@@ -3161,6 +3226,8 @@ def match_prices_bucket(
         mapped.append({**item.model_dump(), "unit_price": fixed_price, "_price_autocorrect_note": warn_note})
 
     alt_info = result.alt_batch_info if fixed_supplier == "ALT" else None
+    if fixed_supplier == "ALT" and alt_info is None:
+        return mapped, extract_alt_batch_info(supplier_text)
     return mapped, alt_info.model_dump() if alt_info is not None else None
 
 

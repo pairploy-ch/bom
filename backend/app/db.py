@@ -650,10 +650,18 @@ def save_price_matching_result(
         conn.execute(
             """
             UPDATE houses
-            SET target_sheet_name = %s, alt_batch_info = COALESCE(%s, alt_batch_info), updated_at = %s
+            SET target_sheet_name = %s,
+                alt_batch_info = CASE WHEN %s THEN %s ELSE alt_batch_info END,
+                updated_at = %s
             WHERE id = %s
             """,
-            (sheet_name, json.dumps(alt_batch_info) if alt_batch_info else None, _now(), house_id),
+            (
+                sheet_name,
+                "ALT" in quotation_documents,
+                json.dumps(alt_batch_info) if alt_batch_info else None,
+                _now(),
+                house_id,
+            ),
         )
         return _get_quotation_pdfs_meta(conn, house_id)
 
@@ -665,6 +673,15 @@ def get_quotation_texts(house_id: str) -> dict[str, str]:
             (house_id,),
         ).fetchall()
     return {r["bucket_label"]: r["raw_text"] for r in rows}
+
+
+def get_quotation_text(house_id: str, bucket: str) -> str:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT raw_text FROM quotation_texts WHERE house_id = %s AND bucket_label = %s",
+            (house_id, bucket),
+        ).fetchone()
+    return row["raw_text"] if row else ""
 
 
 def get_quotation_pdfs_meta(house_id: str) -> list[dict[str, Any]]:
