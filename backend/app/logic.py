@@ -43,6 +43,7 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.exceptions import InvalidFileException
 from PIL import Image as PILImage
+from pydantic import BaseModel, ConfigDict, ValidationError
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_RIGHT
 from reportlab.lib.pagesizes import A4
@@ -95,8 +96,8 @@ class LogicError(Exception):
     """Raised for the same conditions the original app surfaced via st.error()."""
 
 
-class ClaudeOutputError(LogicError):
-    """Claude did not return a complete, usable structured response."""
+class PriceMatchingError(LogicError):
+    """The price matching provider could not produce a usable result."""
 
 
 # --------------------------------------------------------------------------------------
@@ -239,48 +240,20 @@ def call_claude_json(
     tool_name: str,
     tool_description: str,
     input_schema: dict[str, Any],
-    model: str | None = None,
-    max_tokens: int = 4096,
-    timeout: float | None = None,
-    max_retries: int | None = None,
-    strict: bool = False,
 ) -> dict[str, Any]:
-    """
-    Returns the arguments from a forced tool call. Strict mode enforces the
-    input schema and retries token-limited responses once with twice the budget.
-    """
-    if timeout is not None or max_retries is not None:
-        client = client.with_options(
-            timeout=timeout if timeout is not None else config.AI_TIMEOUT_SECONDS,
-            max_retries=max_retries if max_retries is not None else config.AI_MAX_RETRIES,
-        )
-    tool: anthropic.types.ToolParam = {
-        "name": tool_name,
-        "description": tool_description,
-        "input_schema": input_schema,
-    }
-    tool_choice: anthropic.types.ToolChoiceToolParam = {"type": "tool", "name": tool_name}
-    if strict:
-        tool["strict"] = True
-        tool_choice["disable_parallel_tool_use"] = True
-
+    """Returns the arguments from the forced furniture extraction tool call."""
     try:
-        token_limits = (max_tokens, max_tokens * 2) if strict else (max_tokens,)
-        for token_limit in token_limits:
-            response = client.messages.create(
-                model=model or config.ANTHROPIC_MODEL,
-                max_tokens=token_limit,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}],
-                tools=[tool],
-                tool_choice=tool_choice,
-            )
-            if response.stop_reason != "max_tokens":
-                break
-            logger.warning("Claude reached max_tokens=%s for %s (message %s)", token_limit, tool_name, response.id)
-
+        response = client.messages.create(
+            model=config.ANTHROPIC_MODEL,
+            max_tokens=4096,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+            tools=[{"name": tool_name, "description": tool_description, "input_schema": input_schema}],
+            tool_choice={"type": "tool", "name": tool_name},
+        )
         if response.stop_reason == "max_tokens":
-            raise ClaudeOutputError("คำตอบของ Claude ถูกตัดเพราะถึงขีดจำกัด token กรุณาลองอีกครั้ง")
+            logger.warning("Claude reached max_tokens for %s (message %s)", tool_name, response.id)
+            raise LogicError("คำตอบของ Claude ถูกตัดเพราะถึงขีดจำกัด token กรุณาลองอีกครั้ง")
         if response.stop_reason == "tool_use":
             for block in response.content:
                 if block.type == "tool_use" and block.name == tool_name and isinstance(block.input, dict):
@@ -289,7 +262,7 @@ def call_claude_json(
             "Claude returned no usable %s arguments (stop_reason=%s, message %s)",
             tool_name, response.stop_reason, response.id,
         )
-        raise ClaudeOutputError("⚠️ Claude did not return the expected structured output.")
+        raise LogicError("⚠️ Claude did not return the expected structured output.")
     except LogicError:
         raise
     except anthropic.APITimeoutError as e:
@@ -3008,7 +2981,7 @@ def build_price_matching_system_prompt(fixed_supplier: str | None) -> str:
             "of some base value already computed by the supplier — extract that printed number.\n"
             'Report them in "alt_batch_info": {"sum_of_item_costs": <number>, '
             '"protection_fee": <number>, "management_fee": <number>}. If any of these three '
-            'aren\'t explicitly stated as numbers in the text, omit "alt_batch_info" entirely '
+            'aren\'t explicitly stated as numbers in the text, set "alt_batch_info" to null '
             "(do not guess or calculate missing values)."
         )
 
@@ -3063,8 +3036,8 @@ that item; it might be matched in a different batch instead.
 - Also check the matched line in the quotation text for any descriptive detail about the item \
 beyond its name and price — material, construction, or finish notes (e.g. "โครงไม้จริง กรุไม้อัด \
 ปิดวีเนียร์", "ซ่อนไฟ LED Strip Light ความยาวไม่เกิน 16 m."). If present, copy that text into \
-"quotation_spec" for that item. This is genuinely optional — most quotation lines are just a name \
-and a price with nothing else to extract, so leave "quotation_spec" out entirely (do not invent \
+"quotation_spec" for that item. Most quotation lines are just a name and a price, so use an \
+empty string for "quotation_spec" when there is no extra detail (do not invent \
 detail that isn't in the text, and do not repeat the item's own name/spec back).
 - IMPORTANT — stone/granite top add-ons: some numbered line items (e.g. a TV console, kitchen \
 counter, or sideboard) list TWO separate priced components under the SAME item number: the base \
@@ -3079,70 +3052,101 @@ and do NOT report only the base price while dropping the stone top's price.
 - ALWAYS include the original "index" field (copied exactly from the input item) in every \
 output row, so results can be merged back to the correct item afterward.{alt_info_clause}
 
-Call the report_price_matches tool once with a JSON object of this shape. Always include \
-"mapped_items". If there are no confident matches, send "mapped_items": [].
+Return a JSON object with "mapped_items" and "alt_batch_info". Use an empty array for \
+"mapped_items" if there are no confident matches. Use null for "alt_batch_info" unless this \
+is an ALT batch and all three amounts are stated explicitly.
 {{
   "mapped_items": [
     {{"index": 0, "unit_price": 350.00, "supplier": "ABC Furniture Co.", \
 "quotation_spec": "โครงไม้จริง กรุไม้อัดปิดวีเนียร์(ราคาไม่เกิน 1500.-/แผ่น)"}}
-  ]
+  ],
+  "alt_batch_info": null
 }}
 """
 
 
-# Strict tool-call schema for the Step 3 price matching response.
-_PRICE_MATCH_INPUT_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "mapped_items": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "index": {"type": "integer", "description": "Original index from the input furniture list."},
-                    "unit_price": {"type": "number"},
-                    "supplier": {"type": "string"},
-                    "quotation_spec": {
-                        "type": "string",
-                        "description": "Extra descriptive detail found for this item, if any — see instructions.",
-                    },
-                },
-                "required": ["index", "unit_price"],
-            },
-        },
-        "alt_batch_info": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "sum_of_item_costs": {"type": "number"},
-                "protection_fee": {"type": "number"},
-                "management_fee": {"type": "number"},
-            },
-            "required": ["sum_of_item_costs", "protection_fee", "management_fee"],
-        },
-    },
-    "required": ["mapped_items"],
+class _PriceMatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    index: int
+    unit_price: float
+    supplier: str
+    quotation_spec: str
+
+
+class _AltBatchInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    sum_of_item_costs: float
+    protection_fee: float
+    management_fee: float
+
+
+class _PriceMatchingResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mapped_items: list[_PriceMatch]
+    alt_batch_info: _AltBatchInfo | None
+
+
+_PRICE_MATCH_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "name": "quotation_price_matches",
+    "strict": True,
+    "schema": _PriceMatchingResult.model_json_schema(),
 }
 
 
+def _request_price_matches(client: OpenAI, system_prompt: str, user_prompt: str) -> _PriceMatchingResult:
+    client = client.with_options(timeout=180, max_retries=1)
+    try:
+        # This budget covers both reasoning and the structured match list.
+        for token_limit in (25_000, 50_000):
+            response = client.responses.create(
+                model="gpt-6.2-astra",
+                instructions=system_prompt,
+                input=user_prompt,
+                reasoning={"effort": "high"},
+                text={"format": _PRICE_MATCH_RESPONSE_FORMAT},
+                max_output_tokens=token_limit,
+                store=False,
+            )
+            reason = getattr(response.incomplete_details, "reason", None)
+            if response.status != "incomplete" or reason != "max_output_tokens":
+                break
+            logger.warning("OpenAI reached max_output_tokens=%s for price matching (%s)", token_limit, response.id)
+        else:
+            raise PriceMatchingError("คำตอบของ OpenAI ถูกตัดเพราะถึงขีดจำกัด token กรุณาลองอีกครั้ง")
+    except APITimeoutError as e:
+        raise PriceMatchingError("OpenAI ใช้เวลาจับคู่ราคานานเกินกำหนด กรุณาลองอีกครั้ง") from e
+    except RateLimitError as e:
+        if e.code == "insufficient_quota":
+            raise PriceMatchingError("โควตา OpenAI API ไม่พอ กรุณาตรวจสอบเครดิตและวงเงินใน OpenAI Platform") from e
+        raise PriceMatchingError("OpenAI จำกัดอัตราคำขอชั่วคราว กรุณารอสักครู่แล้วลองอีกครั้ง") from e
+    except APIError as e:
+        logger.warning("OpenAI price matching API error (code=%s, request=%s)", e.code, getattr(e, "request_id", None))
+        raise PriceMatchingError("OpenAI API จับคู่ราคาไม่สำเร็จ กรุณาตรวจสอบสิทธิ์ของ API key และลองอีกครั้ง") from e
+
+    if response.status != "completed":
+        logger.warning(
+            "OpenAI price matching did not complete (status=%s, reason=%s, response=%s)",
+            response.status, reason, response.id,
+        )
+        raise PriceMatchingError("OpenAI ตอบกลับไม่สมบูรณ์ กรุณาลองจับคู่ราคาอีกครั้ง")
+    try:
+        return _PriceMatchingResult.model_validate_json(response.output_text)
+    except ValidationError as e:
+        logger.warning("OpenAI returned invalid price matching output (response=%s)", response.id)
+        raise PriceMatchingError("OpenAI ส่งรายการจับคู่ราคาในรูปแบบที่ใช้ไม่ได้ กรุณาลองอีกครั้ง") from e
+
+
 def match_prices_bucket(
-    client: Anthropic,
+    client: OpenAI,
     indexed_furniture_list: list[dict[str, Any]],
     supplier_text: str,
     fixed_supplier: str | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    """
-    Runs price matching for ONE upload bucket. Returns (mapped_items,
-    alt_batch_info) — alt_batch_info is only ever populated when
-    fixed_supplier == "ALT". Raises LogicError if the AI response is malformed.
-
-    Uses Claude Opus 5 (not the app-wide ANTHROPIC_MODEL default, which stays
-    on Sonnet for furniture-list extraction) — this step follows several
-    layered, nuanced rules at once (pre-discount pricing, room/zone matching,
-    stone-top merging) that benefit from the stronger model.
-    """
+    """Matches prices for one upload bucket. ALT fees are returned only for ALT."""
     system_prompt = build_price_matching_system_prompt(fixed_supplier)
     normalized_text = normalize_thousands_commas(supplier_text)
     user_prompt = (
@@ -3150,38 +3154,14 @@ def match_prices_bucket(
         f"{json.dumps(indexed_furniture_list, ensure_ascii=False)}\n\n"
         f"Supplier quotation text for this batch:\n{normalized_text}"
     )
-    result = call_claude_json(
-        client,
-        system_prompt,
-        user_prompt,
-        tool_name="report_price_matches",
-        tool_description="Reports the price-matching results for the furniture list against this supplier quotation batch.",
-        input_schema=_PRICE_MATCH_INPUT_SCHEMA,
-        model="claude-opus-5",
-        max_tokens=8192,
-        # Opus 5 thinks before answering by default, and this request carries
-        # the full furniture list (often 100+ items) plus the whole supplier
-        # PDF's text — routinely takes longer than the 60s tuned for the
-        # non-thinking model this replaced. One retry, not the default two,
-        # since up to 4 buckets run sequentially per house and a slow-but-
-        # correct request rarely gets faster on retry.
-        timeout=180,
-        max_retries=1,
-        strict=True,
-    )
-    mapped = result.get("mapped_items")
-    if not isinstance(mapped, list) or any(not isinstance(item, dict) for item in mapped):
-        raise ClaudeOutputError("Claude ส่งรายการจับคู่ราคา (mapped_items) ในรูปแบบที่ใช้ไม่ได้ กรุณาลองอีกครั้ง")
+    result = _request_price_matches(client, system_prompt, user_prompt)
+    mapped = []
+    for item in result.mapped_items:
+        fixed_price, warn_note = validate_and_fix_price(item.unit_price, supplier_text)
+        mapped.append({**item.model_dump(), "unit_price": fixed_price, "_price_autocorrect_note": warn_note})
 
-    for item in mapped:
-        fixed_price, warn_note = validate_and_fix_price(item.get("unit_price"), supplier_text)
-        item["unit_price"] = fixed_price
-        item["_price_autocorrect_note"] = warn_note
-
-    alt_batch_info = result.get("alt_batch_info") if fixed_supplier == "ALT" else None
-    if not isinstance(alt_batch_info, dict):
-        alt_batch_info = None
-    return mapped, alt_batch_info
+    alt_info = result.alt_batch_info if fixed_supplier == "ALT" else None
+    return mapped, alt_info.model_dump() if alt_info is not None else None
 
 
 def merge_bucket_results(

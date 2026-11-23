@@ -24,9 +24,9 @@ from . import db
 from .config import CORS_ORIGINS
 from .logic import (
     BUCKET_ORDER_TYPE,
-    ClaudeOutputError,
     ColumnMapping,
     LogicError,
+    PriceMatchingError,
     _current_export_source_hash,
     _is_priced_option,
     assign_quotation_labels,
@@ -525,7 +525,7 @@ def group_furniture_by_room(house_id: str):
 @app.post(
     "/api/houses/{house_id}/quotations",
     response_model=MatchPricesResponse,
-    responses={502: {"description": "Claude returned an incomplete or invalid price matching response."}},
+    responses={502: {"description": "OpenAI could not return a complete, valid price matching response."}},
 )
 async def match_prices(
     house_id: str,
@@ -540,9 +540,9 @@ async def match_prices(
     if not furniture_list:
         raise HTTPException(400, "Complete Step 2 (extract the furniture list) first.")
 
-    client = get_anthropic_client()
+    client = get_openai_client()
     if client is None:
-        raise HTTPException(503, "ANTHROPIC_API_KEY is not configured on the server.")
+        raise HTTPException(503, "OPENAI_API_KEY is not configured on the server.")
 
     # Only items still checked ("verified") in Step 2 are carried into Step 3 —
     # unchecking an item is how the user says "I don't want this one," so it's
@@ -596,7 +596,7 @@ async def match_prices(
             mapped, alt_info = await run_in_threadpool(
                 match_prices_bucket, client, indexed_furniture_list, bucket_text, fixed_supplier,
             )
-        except ClaudeOutputError as e:
+        except PriceMatchingError as e:
             raise HTTPException(502, f"{bucket_label}: {e}") from e
 
         quotation_documents[bucket_label] = (bucket_text, pdf_bytes_list)

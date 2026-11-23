@@ -12,14 +12,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY") or None
-# gpt-4o (not -mini) — the mini model was noticeably weaker at reading Thai
-# furniture/procurement text (PDF extraction + price matching), so this
-# defaults to the full model. Override via OPENAI_MODEL in .env if needed.
+# OpenAI fallback for Step 2 furniture-list extraction.
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 
-# Optional — when set, furniture-list extraction (Step 2) prefers Claude over
-# OpenAI, since it tends to read Thai text more accurately. Price matching
-# (Step 3) still always uses OpenAI. Leave unset to use OpenAI everywhere.
+# Step 2 prefers Claude when its API key is configured.
 ANTHROPIC_API_KEY: str | None = os.getenv("ANTHROPIC_API_KEY") or None
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
 
