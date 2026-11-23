@@ -37,7 +37,6 @@ from .logic import (
     extract_alt_batch_info,
     extract_furniture_list,
     extract_text_from_pdf,
-    flag_suspicious_prices,
     generate_contract_docx,
     generate_contract_pdf,
     generate_quotation_docx,
@@ -50,7 +49,9 @@ from .logic import (
     merge_bucket_results,
     parse_exported_excel_for_quotation,
     parse_exported_pdf_for_quotation,
+    prepare_mapping_rows_for_review,
     read_anchor_value,
+    resolve_mapping_order_type,
     write_mapping_to_excel,
 )
 from .schemas import (
@@ -157,7 +158,7 @@ def _get_alt_batch_info(house_id: str, row: dict[str, Any], *, has_alt_quote: bo
 def _house_state(house_id: str) -> HouseState:
     row = _get_house_or_404(house_id)
     furniture = db.get_furniture_items(house_id)
-    mapping = flag_suspicious_prices(db.get_mapping_rows(house_id))
+    mapping = prepare_mapping_rows_for_review(db.get_mapping_rows(house_id))
     quotation_buckets = sorted({m["bucket_label"] for m in db.get_quotation_pdfs_meta(house_id)})
     return HouseState(
         id=row["id"],
@@ -587,17 +588,22 @@ async def match_prices(
 
         combined_chunks = []
         pdf_bytes_list: list[tuple[str, bytes]] = []
+        read_page_images = bucket_label == "OTHER_MAKER"
+        visual_pdfs: list[tuple[str, bytes]] = []
         for pdf_file in files:
             raw = await pdf_file.read()
-            pdf_bytes_list.append((pdf_file.filename or "quotation.pdf", raw))
+            filename = pdf_file.filename or "quotation.pdf"
+            pdf_bytes_list.append((filename, raw))
             try:
-                text, warn = extract_text_from_pdf(raw)
+                text, warn = extract_text_from_pdf(raw, allow_image_only=read_page_images)
             except LogicError as e:
-                warnings.append(f"{bucket_label} — {pdf_file.filename}: {e}")
+                warnings.append(f"{bucket_label} — {filename}: {e}")
                 continue
-            if warn:
-                warnings.append(f"{bucket_label} — {pdf_file.filename}: {warn}")
-            combined_chunks.append(f"===== Supplier document: {pdf_file.filename} =====\n{text}")
+            if read_page_images:
+                visual_pdfs.append((filename, raw))
+            elif warn:
+                warnings.append(f"{bucket_label} — {filename}: {warn}")
+            combined_chunks.append(f"===== Supplier document: {filename} =====\n{text}")
 
         if not combined_chunks:
             warnings.append(f"❌ Could not extract text from any {bucket_label} PDF(s).")
@@ -606,7 +612,7 @@ async def match_prices(
         bucket_text = "\n\n".join(combined_chunks)
         try:
             mapped, alt_info = await run_in_threadpool(
-                match_prices_bucket, client, indexed_furniture_list, bucket_text, fixed_supplier,
+                match_prices_bucket, client, indexed_furniture_list, bucket_text, fixed_supplier, visual_pdfs,
             )
         except PriceMatchingError as e:
             raise HTTPException(502, f"{bucket_label}: {e}") from e
@@ -628,7 +634,7 @@ async def match_prices(
     )
 
     return MatchPricesResponse(
-        mapping_rows=flag_suspicious_prices(final_mapping),
+        mapping_rows=prepare_mapping_rows_for_review(final_mapping),
         matched_buckets=list(quotation_documents),
         alt_batch_info=alt_batch_info,
         warnings=warnings,
@@ -640,8 +646,10 @@ async def match_prices(
 def update_mapping_rows(house_id: str, body: MappingRowsReplace):
     _get_house_or_404(house_id)
     rows = [r.model_dump(exclude={"suspicious"}) for r in body.rows]
+    for row in rows:
+        row["order_type"] = resolve_mapping_order_type(row)
     db.replace_mapping_rows(house_id, rows)
-    return flag_suspicious_prices(db.get_mapping_rows(house_id))
+    return prepare_mapping_rows_for_review(db.get_mapping_rows(house_id))
 
 
 @app.get("/api/houses/{house_id}/quotations/texts", response_model=QuotationTextsResponse)

@@ -86,15 +86,29 @@ function promptForNewRoom(): string | null {
 }
 
 function isUnpriced(row: MappingRow): boolean {
-  if (row.order_type === "จัดซื้อ (บวกกำไร 10DK)") return row.other_maker_price <= 0;
-  if (row.order_type === "จัดซื้อ (ราคาจริง ไม่บวกกำไร)") return row.unit_price <= 0;
   return row.unit_price <= 0 && row.alt_price <= 0 && row.pmay_price <= 0 && row.other_maker_price <= 0;
 }
+
+function supplierPlaceholder(row: MappingRow): string {
+  if (row.order_type === "สั่งผลิต") {
+    return [row.alt_price > 0 && "ALT", row.pmay_price > 0 && "P'May", row.other_maker_price > 0 && "Other"]
+      .filter(Boolean)
+      .join(" / ") || "ระบุชื่อผู้ขาย";
+  }
+  return row.order_type === "จัดซื้อ (บวกกำไร 10DK)" && row.other_maker_price > 0 ? "Other" : "ระบุชื่อผู้ขาย";
+}
+
+const ORDER_TYPE_BY_PRICE_FIELD = {
+  alt_price: "สั่งผลิต",
+  pmay_price: "สั่งผลิต",
+  other_maker_price: "จัดซื้อ (บวกกำไร 10DK)",
+  unit_price: "จัดซื้อ (ราคาจริง ไม่บวกกำไร)",
+} as const;
 
 const BUCKETS = [
   { key: "alt", title: "ALT (สั่งผลิต)", icon: Factory, hint: "" },
   { key: "pmay", title: "P'May (สั่งผลิต)", icon: Factory, hint: "" },
-  { key: "other", title: "Other (จัดซื้อ บวกกำไร 10DK)", icon: Factory, hint: "" },
+  { key: "other", title: "Other (จัดซื้อ บวกกำไร 10DK)", icon: Factory, hint: "รองรับ PDF ที่มีภาพสแกน" },
   { key: "purchase", title: "เบิกจ่ายตามจริง (จัดซื้อ)", icon: ShoppingCart, hint: "ร้านทั่วไป เช่น SB, Index, IKEA" },
 ] as const;
 type BucketKey = (typeof BUCKETS)[number]["key"];
@@ -198,9 +212,8 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
     setRowsDirty(true);
   };
 
-  const updatePurchasePrice = (index: number, field: "other_maker_price" | "unit_price", price: number) => {
-    const orderType = field === "other_maker_price" ? "จัดซื้อ (บวกกำไร 10DK)" : "จัดซื้อ (ราคาจริง ไม่บวกกำไร)";
-    updateRow(index, { [field]: price, ...(price > 0 && { order_type: orderType }) });
+  const updatePrice = (index: number, field: keyof typeof ORDER_TYPE_BY_PRICE_FIELD, price: number) => {
+    updateRow(index, { [field]: price, ...(price > 0 && { order_type: ORDER_TYPE_BY_PRICE_FIELD[field] }) });
   };
 
   const handleSaveRows = () => saveRows.mutate(rows);
@@ -758,32 +771,36 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                               <Input
                                 type="number"
                                 value={row.alt_price}
-                                onChange={(e) => updateRow(i, { alt_price: Number(e.target.value) || 0 })}
+                                onChange={(e) => updatePrice(i, "alt_price", Number(e.target.value) || 0)}
                               />
                             </td>
                             <td className="py-1.5 pr-2">
                               <Input
                                 type="number"
                                 value={row.pmay_price}
-                                onChange={(e) => updateRow(i, { pmay_price: Number(e.target.value) || 0 })}
+                                onChange={(e) => updatePrice(i, "pmay_price", Number(e.target.value) || 0)}
                               />
                             </td>
                             <td className="py-1.5 pr-2">
                               <Input
                                 type="number"
                                 value={row.other_maker_price}
-                                onChange={(e) => updatePurchasePrice(i, "other_maker_price", Number(e.target.value) || 0)}
+                                onChange={(e) => updatePrice(i, "other_maker_price", Number(e.target.value) || 0)}
                               />
                             </td>
                             <td className="py-1.5 pr-2">
                               <Input
                                 type="number"
                                 value={row.unit_price}
-                                onChange={(e) => updatePurchasePrice(i, "unit_price", Number(e.target.value) || 0)}
+                                onChange={(e) => updatePrice(i, "unit_price", Number(e.target.value) || 0)}
                               />
                             </td>
                             <td className="py-1.5 pr-2">
-                              <Input value={row.supplier} onChange={(e) => updateRow(i, { supplier: e.target.value })} />
+                              <Input
+                                value={row.supplier}
+                                placeholder={supplierPlaceholder(row)}
+                                onChange={(e) => updateRow(i, { supplier: e.target.value })}
+                              />
                             </td>
                             <td className="py-1.5 text-center">
                               <button onClick={() => removeRow(i)} aria-label="Remove row" className="text-slate-400 hover:text-red-600">

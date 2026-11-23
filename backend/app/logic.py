@@ -23,6 +23,7 @@ import json
 import logging
 import math
 import re
+from base64 import b64encode
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -119,6 +120,9 @@ ROOM_HEADER_FONT = Font(color="FFFFFFFF", bold=True)
 MONEY_FORMAT = "#,##0"
 DEFAULT_VAT_MULTIPLIER = 1.1235
 DEFAULT_10DK_MULTIPLIER = 1.45
+MADE_TO_ORDER = "สั่งผลิต"
+PURCHASE_WITH_MARKUP = "จัดซื้อ (บวกกำไร 10DK)"
+PURCHASE_AT_COST = "จัดซื้อ (ราคาจริง ไม่บวกกำไร)"
 
 
 @dataclass
@@ -169,11 +173,44 @@ def apply_known_price_adjustments(item_name: str, unit_price: float) -> tuple[fl
     return unit_price, ""
 
 
+def resolve_mapping_order_type(row: dict[str, Any]) -> str:
+    """Keeps a priced selection, or uses the category of an available price."""
+    selected = row.get("order_type") or PURCHASE_AT_COST
+    has_made_price = (row.get("alt_price") or 0) > 0 or (row.get("pmay_price") or 0) > 0
+    has_other_price = (row.get("other_maker_price") or 0) > 0
+    has_actual_price = (row.get("unit_price") or 0) > 0
+    if (
+        (selected == MADE_TO_ORDER and has_made_price)
+        or (selected == PURCHASE_WITH_MARKUP and has_other_price)
+        or (selected == PURCHASE_AT_COST and has_actual_price)
+    ):
+        return selected
+    if has_made_price:
+        return MADE_TO_ORDER
+    if has_other_price:
+        return PURCHASE_WITH_MARKUP
+    if has_actual_price:
+        return PURCHASE_AT_COST
+    return selected
+
+
+def _supplier_for_order_type(row: dict[str, Any], order_type: str) -> str:
+    supplier = str(row.get("supplier") or "").strip()
+    if supplier:
+        return supplier
+    if order_type == MADE_TO_ORDER:
+        sources = (("alt_price", "ALT"), ("pmay_price", "P'May"), ("other_maker_price", "Other"))
+        return " / ".join(label for field, label in sources if (row.get(field) or 0) > 0)
+    if order_type == PURCHASE_WITH_MARKUP and (row.get("other_maker_price") or 0) > 0:
+        return "Other"
+    return ""
+
+
 def _price_for_order_type(row: dict[str, Any], order_type: str) -> tuple[float, str]:
     unit_price = float(row.get("unit_price") or 0)
-    if order_type == "จัดซื้อ (ราคาจริง ไม่บวกกำไร)":
+    if order_type == PURCHASE_AT_COST:
         return unit_price, ""
-    if order_type == "จัดซื้อ (บวกกำไร 10DK)":
+    if order_type == PURCHASE_WITH_MARKUP:
         unit_price = float(row.get("other_maker_price") or 0)
         if unit_price <= 0:
             return 0, ""
@@ -347,16 +384,14 @@ def detect_thai_mojibake(text: str, sample_size: int = 2000) -> bool:
     return mojibake_hits > 20 and mojibake_hits > thai_hits
 
 
-def extract_text_from_pdf(file_bytes: bytes) -> tuple[str, str | None]:
+def extract_text_from_pdf(file_bytes: bytes, *, allow_image_only: bool = False) -> tuple[str, str | None]:
     """
     Extracts text from a PDF's raw bytes using pdfplumber, with the same
     Thai-specific handling as the original (tight character clustering,
     stray-space cleanup, mojibake detection).
 
-    Returns (text, warning_or_None). Raises LogicError if the PDF has no
-    pages, or has no extractable text at all (both were `return None` +
-    st.warning/st.error stops in the original — callers there always treated
-    a None return as "stop this step", which LogicError reproduces).
+    Returns (text, warning_or_None). Image-only files can proceed when the
+    caller also sends the PDF itself to a vision-capable model.
     """
     try:
         text_chunks = []
@@ -382,7 +417,7 @@ def extract_text_from_pdf(file_bytes: bytes) -> tuple[str, str | None]:
 
         full_text = "\n\n".join(text_chunks).strip()
 
-        if not full_text:
+        if not full_text and not allow_image_only:
             raise LogicError(
                 "⚠️ No selectable text could be extracted from this PDF. "
                 "It may be a scanned image without a text layer. "
@@ -415,16 +450,20 @@ def _current_export_source_hash(
     alt_batch_info: dict[str, Any] | None = None,
 ) -> str:
     """Fingerprints everything that affects the exported file, to detect a stale download."""
+    priced_rows = []
+    for row in mapping_rows:
+        order_type = resolve_mapping_order_type(row)
+        priced_rows.append({**row, "order_type": order_type, "supplier": _supplier_for_order_type(row, order_type)})
     h = hashlib.md5()
     h.update(excel_bytes or b"")
-    h.update(json.dumps(mapping_rows, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8"))
+    h.update(json.dumps(priced_rows, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8"))
     loading_factor = _alt_loading_factor_from_batch(alt_batch_info)
     if loading_factor is not None:
         h.update(f"|alt-loading-factor={loading_factor}".encode("ascii"))
     if any(
-        _price_for_order_type(row, row.get("order_type", "จัดซื้อ (ราคาจริง ไม่บวกกำไร)"))
+        _price_for_order_type(row, row["order_type"])
         != apply_known_price_adjustments(row.get("item_name", ""), float(row.get("unit_price") or 0))
-        for row in mapping_rows
+        for row in priced_rows
     ):
         h.update(b"|purchase-price-source")
     return h.hexdigest()
@@ -582,7 +621,7 @@ def write_mapping_to_excel(
 
             item_no = 1
             for row in grouped[room]:
-                order_type = row.get("order_type", "จัดซื้อ (ราคาจริง ไม่บวกกำไร)")
+                order_type = resolve_mapping_order_type(row)
                 unit_price, adj_note = _price_for_order_type(row, order_type)
 
                 item_text = build_item_display_text(
@@ -595,17 +634,17 @@ def write_mapping_to_excel(
                 ws.cell(row=current_row, column=room_idx).value = item_no
                 ws.cell(row=current_row, column=item_idx).value = item_text
                 ws.cell(row=current_row, column=qty_idx).value = row.get("quantity", 0)
+                supplier = _supplier_for_order_type(row, order_type)
+                if supplier:
+                    cell = ws.cell(
+                        row=current_row, column=supplier_idx, value=ILLEGAL_CHARACTERS_RE.sub("", supplier),
+                    )
+                    cell.data_type = "s"
 
-                if order_type == "สั่งผลิต":
+                if order_type == MADE_TO_ORDER:
                     alt_price = row.get("alt_price", 0) or 0
                     pmay_price = row.get("pmay_price", 0) or 0
                     other_maker_price = row.get("other_maker_price", 0) or 0
-                    if alt_price <= 0 and pmay_price <= 0 and other_maker_price <= 0 and unit_price > 0:
-                        alt_price = unit_price
-
-                    supplier = row.get("supplier", "")
-                    if supplier:
-                        ws.cell(row=current_row, column=supplier_idx).value = supplier
                     r = current_row
 
                     if alt_price > 0:
@@ -631,10 +670,7 @@ def write_mapping_to_excel(
                         ws.cell(row=r, column=q_idx).value = f"={col_map.formula_m_col}{r}"
                         ws.cell(row=r, column=q_idx).number_format = MONEY_FORMAT
 
-                elif order_type == "จัดซื้อ (บวกกำไร 10DK)":
-                    supplier = row.get("supplier", "")
-                    if supplier:
-                        ws.cell(row=current_row, column=supplier_idx).value = supplier
+                elif order_type == PURCHASE_WITH_MARKUP:
                     if col_map.generate_formulas:
                         r = current_row
                         ws.cell(row=r, column=k_idx).value = f"=({unit_price}*{i_ref})"
@@ -650,9 +686,6 @@ def write_mapping_to_excel(
                         ws.cell(row=current_row, column=k_idx).number_format = MONEY_FORMAT
 
                 else:  # "จัดซื้อ (ราคาจริง ไม่บวกกำไร)"
-                    supplier = row.get("supplier", "")
-                    if supplier:
-                        ws.cell(row=current_row, column=supplier_idx).value = supplier
                     ws.cell(row=current_row, column=purchased_price_idx).value = unit_price
                     ws.cell(row=current_row, column=purchased_price_idx).number_format = MONEY_FORMAT
                     if col_map.generate_formulas:
@@ -843,8 +876,8 @@ def compute_price_preview(
         return math.ceil(x / 1000.0) * 1000.0
 
     for row in rows:
-        order_type = row.get("order_type", "จัดซื้อ (ราคาจริง ไม่บวกกำไร)")
-        supplier = row.get("supplier", "")
+        order_type = resolve_mapping_order_type(row)
+        supplier = _supplier_for_order_type(row, order_type)
         unit_price, adj_note = _price_for_order_type(row, order_type)
         qty = float(row.get("quantity", 0) or 0)
         display_name = build_item_display_text(
@@ -862,13 +895,10 @@ def compute_price_preview(
             "unit_price": unit_price,
             "auto_note": adj_note,
         }
-        if order_type == "สั่งผลิต":
+        if order_type == MADE_TO_ORDER:
             alt_price = float(row.get("alt_price", 0) or 0)
             pmay_price = float(row.get("pmay_price", 0) or 0)
             other_maker_price = float(row.get("other_maker_price", 0) or 0)
-            if alt_price <= 0 and pmay_price <= 0 and other_maker_price <= 0 and unit_price > 0:
-                alt_price = unit_price
-
             i_val = None
             if alt_price > 0:
                 g = alt_price
@@ -890,7 +920,7 @@ def compute_price_preview(
             l = max(candidates) if candidates else None
             m = roundup_thousand(l * m_mult) if l is not None else None
             out.update({"l_chosen": l, "m_10dk_price": m})
-        elif order_type == "จัดซื้อ (บวกกำไร 10DK)":
+        elif order_type == PURCHASE_WITH_MARKUP:
             k = unit_price * i_mult
             l = k
             m = roundup_thousand(l * m_mult)
@@ -3003,7 +3033,7 @@ def build_item_display_text(
 
 def build_price_matching_system_prompt(fixed_supplier: str | None) -> str:
     """Builds the Step-3 matching prompt for one upload bucket — see app.py for the full rationale."""
-    if fixed_supplier:
+    if fixed_supplier in ("ALT", "P'May"):
         supplier_clause = (
             f'- Every document in this batch is already known to be from a single supplier: '
             f'"{fixed_supplier}". You do NOT need to detect or guess the supplier name — set '
@@ -3011,10 +3041,10 @@ def build_price_matching_system_prompt(fixed_supplier: str | None) -> str:
         )
     else:
         supplier_clause = (
-            '- Also identify which supplier/company the matched price came from (from the '
-            "document's filename, or from a company name mentioned inside that document's text, "
-            'whichever is more informative) and put it in "supplier". If genuinely unclear, leave '
-            '"supplier" empty.'
+            '- Identify the seller for the matched price. Read the seller name from the quote '
+            'header, logo text, or a filename that clearly identifies the seller. If a PDF '
+            'contains screenshots from several stores, use the seller on the matched listing. '
+            'Put it in "supplier". Leave it empty when the seller cannot be identified confidently.'
         )
 
     price_column_clause = ""
@@ -3070,9 +3100,10 @@ def build_price_matching_system_prompt(fixed_supplier: str | None) -> str:
 1. A JSON furniture list, where each item has "index" (its position in the original list), \
 "room", "item_name", "quantity", and optionally "spec" (size/dimensions/material — may be an \
 empty string if not known).
-2. Raw text extracted from one or more supplier price quotation PDFs, all belonging to the \
-SAME pricing batch. If there are multiple documents, each is marked with a "===== Supplier \
-document: <filename> =====" header so you know which text belongs to which file.
+2. One or more supplier price quotations from the SAME pricing batch. They are provided as raw \
+text or attached PDFs. Text documents are marked with a "===== Supplier document: <filename> \
+=====" header. For attached PDFs, inspect the page images for printed prices, labels, and seller \
+names, including pages without selectable text.
 
 Your job:
 - IMPORTANT — check filenames first: suppliers sometimes name each quotation PDF file after the \
@@ -3178,7 +3209,30 @@ _PRICE_MATCH_RESPONSE_FORMAT = {
 }
 
 
-def _request_price_matches(client: OpenAI, system_prompt: str, user_prompt: str) -> _PriceMatchingResult:
+def _request_price_matches(
+    client: OpenAI,
+    system_prompt: str,
+    user_prompt: str,
+    quotation_pdfs: list[tuple[str, bytes]] | None = None,
+) -> _PriceMatchingResult:
+    model_input: Any = user_prompt
+    if quotation_pdfs:
+        if sum(len(data) for _, data in quotation_pdfs) >= 50_000_000:
+            raise LogicError("ไฟล์ใบเสนอราคา Other ต้องมีขนาดรวมต่ำกว่า 50 MB เพื่อให้ระบบอ่านภาพจาก PDF ได้")
+        model_input = [{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": user_prompt},
+                *[
+                    {
+                        "type": "input_file",
+                        "filename": filename,
+                        "file_data": f"data:application/pdf;base64,{b64encode(data).decode('ascii')}",
+                    }
+                    for filename, data in quotation_pdfs
+                ],
+            ],
+        }]
     client = client.with_options(timeout=180, max_retries=1)
     try:
         # This budget covers both reasoning and the structured match list.
@@ -3186,7 +3240,7 @@ def _request_price_matches(client: OpenAI, system_prompt: str, user_prompt: str)
             response = client.responses.create(
                 model="gpt-6.2-astra",
                 instructions=system_prompt,
-                input=user_prompt,
+                input=model_input,
                 reasoning={"effort": "high"},
                 text={"format": _PRICE_MATCH_RESPONSE_FORMAT},
                 max_output_tokens=token_limit,
@@ -3201,7 +3255,7 @@ def _request_price_matches(client: OpenAI, system_prompt: str, user_prompt: str)
     except APITimeoutError as e:
         raise PriceMatchingError("OpenAI ใช้เวลาจับคู่ราคานานเกินกำหนด กรุณาลองอีกครั้ง") from e
     except RateLimitError as e:
-        if e.code == "insufficient_quota":
+        if e.code in {"insufficient_quota", "credit_balance_exhausted"}:
             raise PriceMatchingError("โควตา OpenAI API ไม่พอ กรุณาตรวจสอบเครดิตและวงเงินใน OpenAI Platform") from e
         raise PriceMatchingError("OpenAI จำกัดอัตราคำขอชั่วคราว กรุณารอสักครู่แล้วลองอีกครั้ง") from e
     except APIError as e:
@@ -3226,16 +3280,19 @@ def match_prices_bucket(
     indexed_furniture_list: list[dict[str, Any]],
     supplier_text: str,
     fixed_supplier: str | None,
+    quotation_pdfs: list[tuple[str, bytes]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Matches prices for one upload bucket. ALT fees are returned only for ALT."""
     system_prompt = build_price_matching_system_prompt(fixed_supplier)
-    normalized_text = normalize_thousands_commas(supplier_text)
     user_prompt = (
         f"Furniture list (JSON, with original index):\n"
-        f"{json.dumps(indexed_furniture_list, ensure_ascii=False)}\n\n"
-        f"Supplier quotation text for this batch:\n{normalized_text}"
+        f"{json.dumps(indexed_furniture_list, ensure_ascii=False)}"
     )
-    result = _request_price_matches(client, system_prompt, user_prompt)
+    if quotation_pdfs:
+        user_prompt += "\n\nSupplier quotations are attached as PDFs. Read their page images."
+    else:
+        user_prompt += f"\n\nSupplier quotation text for this batch:\n{normalize_thousands_commas(supplier_text)}"
+    result = _request_price_matches(client, system_prompt, user_prompt, quotation_pdfs)
     mapped = []
     for item in result.mapped_items:
         fixed_price, warn_note = validate_and_fix_price(item.unit_price, supplier_text)
@@ -3248,10 +3305,6 @@ def match_prices_bucket(
 
 
 def _has_mapping_price(row: dict[str, Any]) -> bool:
-    if row.get("order_type") == "จัดซื้อ (บวกกำไร 10DK)":
-        return (row.get("other_maker_price") or 0) > 0
-    if row.get("order_type") != "สั่งผลิต":
-        return (row.get("unit_price") or 0) > 0
     return any((row.get(field) or 0) > 0 for field in ("unit_price", "alt_price", "pmay_price", "other_maker_price"))
 
 
@@ -3317,6 +3370,7 @@ def merge_bucket_results(
             elif bucket_label == "OTHER_MAKER":
                 entry["other_maker_price"] = price
                 entry["order_type"] = "จัดซื้อ (บวกกำไร 10DK)"
+                entry["supplier"] = str(row.get("supplier") or "").strip()
                 if autocorrected:
                     entry["item_name"] += " [ราคา Other ถูกแก้ไขอัตโนมัติ - โปรดตรวจสอบ]"
                     autocorrected_total += 1
@@ -3385,12 +3439,9 @@ def build_unpriced_items_workbook(rows: list[dict[str, Any]]) -> bytes:
     return output.getvalue()
 
 
-def flag_suspicious_prices(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def prepare_mapping_rows_for_review(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    Flags rows with an implausibly low price (< 100 บาท — furniture is
-    essentially never priced under this), the same auto-flag the original
-    app recomputed on every render. Returns new dicts with `suspicious: bool`
-    set; does not mutate the input.
+    Resolves the category for each row and flags prices below the review threshold.
     """
     out = []
     for item in rows:
@@ -3401,5 +3452,5 @@ def flag_suspicious_prices(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             float(item.get("other_maker_price", 0) or 0),
         ]
         suspicious = any(0 < p < SUSPICIOUS_PRICE_THRESHOLD for p in prices)
-        out.append({**item, "suspicious": suspicious})
+        out.append({**item, "order_type": resolve_mapping_order_type(item), "suspicious": suspicious})
     return out
