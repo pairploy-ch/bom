@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
@@ -23,6 +24,7 @@ from . import db
 from .config import CORS_ORIGINS
 from .logic import (
     BUCKET_ORDER_TYPE,
+    ClaudeOutputError,
     ColumnMapping,
     LogicError,
     _current_export_source_hash,
@@ -520,7 +522,11 @@ def group_furniture_by_room(house_id: str):
 
 # ------------------------------------------------------------------ step 3 --
 
-@app.post("/api/houses/{house_id}/quotations", response_model=MatchPricesResponse)
+@app.post(
+    "/api/houses/{house_id}/quotations",
+    response_model=MatchPricesResponse,
+    responses={502: {"description": "Claude returned an incomplete or invalid price matching response."}},
+)
 async def match_prices(
     house_id: str,
     sheet_name: str = Form(...),
@@ -559,9 +565,9 @@ async def match_prices(
     ]
 
     bucket_results: list[tuple[str, list[dict[str, Any]]]] = []
+    quotation_documents: dict[str, tuple[str, list[tuple[str, bytes]]]] = {}
     warnings: list[str] = []
     alt_batch_info: dict[str, Any] | None = None
-    matched_buckets: list[str] = []
 
     for bucket_label, files, fixed_supplier in buckets:
         if not files:
@@ -586,12 +592,15 @@ async def match_prices(
             continue
 
         bucket_text = "\n\n".join(combined_chunks)
-        db.save_quotation_texts(house_id, {bucket_label: bucket_text})
-        db.save_quotation_pdfs(house_id, bucket_label, pdf_bytes_list)
+        try:
+            mapped, alt_info = await run_in_threadpool(
+                match_prices_bucket, client, indexed_furniture_list, bucket_text, fixed_supplier,
+            )
+        except ClaudeOutputError as e:
+            raise HTTPException(502, f"{bucket_label}: {e}") from e
 
-        mapped, alt_info = match_prices_bucket(client, indexed_furniture_list, bucket_text, fixed_supplier)
+        quotation_documents[bucket_label] = (bucket_text, pdf_bytes_list)
         bucket_results.append((bucket_label, mapped))
-        matched_buckets.append(bucket_label)
         if alt_info:
             alt_batch_info = alt_info
 
@@ -602,17 +611,16 @@ async def match_prices(
     if merge_warning:
         warnings.append(merge_warning)
 
-    db.replace_mapping_rows(house_id, final_mapping)
-    if alt_batch_info:
-        db.update_alt_batch_info(house_id, alt_batch_info)
-    db.update_target_sheet(house_id, sheet_name)
+    pdf_files = db.save_price_matching_result(
+        house_id, final_mapping, sheet_name, alt_batch_info, quotation_documents,
+    )
 
     return MatchPricesResponse(
         mapping_rows=flag_suspicious_prices(final_mapping),
-        matched_buckets=matched_buckets,
+        matched_buckets=list(quotation_documents),
         alt_batch_info=alt_batch_info,
         warnings=warnings,
-        pdf_files=db.get_quotation_pdfs_meta(house_id),
+        pdf_files=pdf_files,
     )
 
 

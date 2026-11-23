@@ -474,14 +474,6 @@ def update_target_sheet(house_id: str, sheet_name: str) -> None:
         )
 
 
-def update_alt_batch_info(house_id: str, alt_batch_info: dict[str, Any] | None) -> None:
-    with get_conn() as conn:
-        conn.execute(
-            "UPDATE houses SET alt_batch_info = %s, updated_at = %s WHERE id = %s",
-            (json.dumps(alt_batch_info) if alt_batch_info else None, _now(), house_id),
-        )
-
-
 def update_baseline_furniture_value(house_id: str, value: float | None) -> None:
     with get_conn() as conn:
         conn.execute(
@@ -578,34 +570,38 @@ def get_furniture_items(house_id: str) -> list[dict[str, Any]]:
 def replace_mapping_rows(house_id: str, rows: list[dict[str, Any]]) -> None:
     with get_conn() as conn:
         _lock_house(conn, house_id)
-        conn.execute("DELETE FROM mapping_rows WHERE house_id = %s", (house_id,))
-        conn.cursor().executemany(
-            """
-            INSERT INTO mapping_rows
-                (house_id, position, room, item_name, quantity, unit_price,
-                 alt_price, pmay_price, other_maker_price, supplier, order_type, spec, quotation_spec)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            [
-                (
-                    house_id,
-                    i,
-                    str(row.get("room") or ""),
-                    str(row.get("item_name") or ""),
-                    float(row.get("quantity") or 0),
-                    float(row.get("unit_price") or 0),
-                    float(row.get("alt_price") or 0),
-                    float(row.get("pmay_price") or 0),
-                    float(row.get("other_maker_price") or 0),
-                    str(row.get("supplier") or ""),
-                    str(row.get("order_type") or DEFAULT_ORDER_TYPE),
-                    str(row.get("spec") or ""),
-                    str(row.get("quotation_spec") or ""),
-                )
-                for i, row in enumerate(rows)
-            ],
-        )
+        _replace_mapping_rows(conn, house_id, rows)
         conn.execute("UPDATE houses SET updated_at = %s WHERE id = %s", (_now(), house_id))
+
+
+def _replace_mapping_rows(conn: psycopg.Connection, house_id: str, rows: list[dict[str, Any]]) -> None:
+    conn.execute("DELETE FROM mapping_rows WHERE house_id = %s", (house_id,))
+    conn.cursor().executemany(
+        """
+        INSERT INTO mapping_rows
+            (house_id, position, room, item_name, quantity, unit_price,
+             alt_price, pmay_price, other_maker_price, supplier, order_type, spec, quotation_spec)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        [
+            (
+                house_id,
+                i,
+                str(row.get("room") or ""),
+                str(row.get("item_name") or ""),
+                float(row.get("quantity") or 0),
+                float(row.get("unit_price") or 0),
+                float(row.get("alt_price") or 0),
+                float(row.get("pmay_price") or 0),
+                float(row.get("other_maker_price") or 0),
+                str(row.get("supplier") or ""),
+                str(row.get("order_type") or DEFAULT_ORDER_TYPE),
+                str(row.get("spec") or ""),
+                str(row.get("quotation_spec") or ""),
+            )
+            for i, row in enumerate(rows)
+        ],
+    )
 
 
 def get_mapping_rows(house_id: str) -> list[dict[str, Any]]:
@@ -623,9 +619,17 @@ def get_mapping_rows(house_id: str) -> list[dict[str, Any]]:
 
 # --------------------------------------------------------------- quotations --
 
-def save_quotation_texts(house_id: str, texts_by_bucket: dict[str, str]) -> None:
+def save_price_matching_result(
+    house_id: str,
+    rows: list[dict[str, Any]],
+    sheet_name: str,
+    alt_batch_info: dict[str, Any] | None,
+    quotation_documents: dict[str, tuple[str, list[tuple[str, bytes]]]],
+) -> list[dict[str, Any]]:
+    """Saves matching results and their source documents in one transaction."""
     with get_conn() as conn:
-        for bucket, text in texts_by_bucket.items():
+        _lock_house(conn, house_id)
+        for bucket, (text, files) in quotation_documents.items():
             conn.execute(
                 """
                 INSERT INTO quotation_texts (house_id, bucket_label, raw_text)
@@ -634,6 +638,24 @@ def save_quotation_texts(house_id: str, texts_by_bucket: dict[str, str]) -> None
                 """,
                 (house_id, bucket, text),
             )
+            conn.execute(
+                "DELETE FROM quotation_pdfs WHERE house_id = %s AND bucket_label = %s",
+                (house_id, bucket),
+            )
+            conn.cursor().executemany(
+                "INSERT INTO quotation_pdfs (house_id, bucket_label, filename, pdf_bytes) VALUES (%s, %s, %s, %s)",
+                [(house_id, bucket, filename, data) for filename, data in files],
+            )
+        _replace_mapping_rows(conn, house_id, rows)
+        conn.execute(
+            """
+            UPDATE houses
+            SET target_sheet_name = %s, alt_batch_info = COALESCE(%s, alt_batch_info), updated_at = %s
+            WHERE id = %s
+            """,
+            (sheet_name, json.dumps(alt_batch_info) if alt_batch_info else None, _now(), house_id),
+        )
+        return _get_quotation_pdfs_meta(conn, house_id)
 
 
 def get_quotation_texts(house_id: str) -> dict[str, str]:
@@ -645,26 +667,16 @@ def get_quotation_texts(house_id: str) -> dict[str, str]:
     return {r["bucket_label"]: r["raw_text"] for r in rows}
 
 
-def save_quotation_pdfs(house_id: str, bucket: str, files: list[tuple[str, bytes]]) -> None:
-    """Replaces all previously-stored PDFs for this one bucket."""
-    with get_conn() as conn:
-        _lock_house(conn, house_id)
-        conn.execute(
-            "DELETE FROM quotation_pdfs WHERE house_id = %s AND bucket_label = %s",
-            (house_id, bucket),
-        )
-        conn.cursor().executemany(
-            "INSERT INTO quotation_pdfs (house_id, bucket_label, filename, pdf_bytes) VALUES (%s, %s, %s, %s)",
-            [(house_id, bucket, filename, data) for filename, data in files],
-        )
-
-
 def get_quotation_pdfs_meta(house_id: str) -> list[dict[str, Any]]:
     with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT id, bucket_label, filename FROM quotation_pdfs WHERE house_id = %s ORDER BY bucket_label, id",
-            (house_id,),
-        ).fetchall()
+        return _get_quotation_pdfs_meta(conn, house_id)
+
+
+def _get_quotation_pdfs_meta(conn: psycopg.Connection, house_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT id, bucket_label, filename FROM quotation_pdfs WHERE house_id = %s ORDER BY bucket_label, id",
+        (house_id,),
+    ).fetchall()
     return [dict(r) for r in rows]
 
 

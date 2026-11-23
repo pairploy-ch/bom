@@ -95,6 +95,10 @@ class LogicError(Exception):
     """Raised for the same conditions the original app surfaced via st.error()."""
 
 
+class ClaudeOutputError(LogicError):
+    """Claude did not return a complete, usable structured response."""
+
+
 # --------------------------------------------------------------------------------------
 # Data Models
 # --------------------------------------------------------------------------------------
@@ -239,38 +243,53 @@ def call_claude_json(
     max_tokens: int = 4096,
     timeout: float | None = None,
     max_retries: int | None = None,
+    strict: bool = False,
 ) -> dict[str, Any]:
     """
-    Claude has no OpenAI-style response_format={'type':'json_object'} mode, so
-    this uses a single forced tool call instead — Claude must call `tool_name`
-    with arguments matching `input_schema`, which is a more reliable way to
-    get back exactly-shaped JSON than asking it to emit a raw JSON text block.
-    Raises LogicError on any failure, mirroring call_openai_json. `model`
-    defaults to config.ANTHROPIC_MODEL if not given, so callers that need a
-    different model for one call site (e.g. price matching) don't have to
-    change the app-wide default. `timeout`/`max_retries` similarly override
-    the client's own config.AI_TIMEOUT_SECONDS default for one call — needed
-    for Opus-tier models, which think before answering by default and can
-    genuinely take longer than the 60s tuned for older, non-thinking models.
+    Returns the arguments from a forced tool call. Strict mode enforces the
+    input schema and retries token-limited responses once with twice the budget.
     """
     if timeout is not None or max_retries is not None:
         client = client.with_options(
             timeout=timeout if timeout is not None else config.AI_TIMEOUT_SECONDS,
             max_retries=max_retries if max_retries is not None else config.AI_MAX_RETRIES,
         )
+    tool: anthropic.types.ToolParam = {
+        "name": tool_name,
+        "description": tool_description,
+        "input_schema": input_schema,
+    }
+    tool_choice: anthropic.types.ToolChoiceToolParam = {"type": "tool", "name": tool_name}
+    if strict:
+        tool["strict"] = True
+        tool_choice["disable_parallel_tool_use"] = True
+
     try:
-        response = client.messages.create(
-            model=model or config.ANTHROPIC_MODEL,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-            tools=[{"name": tool_name, "description": tool_description, "input_schema": input_schema}],
-            tool_choice={"type": "tool", "name": tool_name},
+        token_limits = (max_tokens, max_tokens * 2) if strict else (max_tokens,)
+        for token_limit in token_limits:
+            response = client.messages.create(
+                model=model or config.ANTHROPIC_MODEL,
+                max_tokens=token_limit,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                tools=[tool],
+                tool_choice=tool_choice,
+            )
+            if response.stop_reason != "max_tokens":
+                break
+            logger.warning("Claude reached max_tokens=%s for %s (message %s)", token_limit, tool_name, response.id)
+
+        if response.stop_reason == "max_tokens":
+            raise ClaudeOutputError("คำตอบของ Claude ถูกตัดเพราะถึงขีดจำกัด token กรุณาลองอีกครั้ง")
+        if response.stop_reason == "tool_use":
+            for block in response.content:
+                if block.type == "tool_use" and block.name == tool_name and isinstance(block.input, dict):
+                    return block.input
+        logger.warning(
+            "Claude returned no usable %s arguments (stop_reason=%s, message %s)",
+            tool_name, response.stop_reason, response.id,
         )
-        for block in response.content:
-            if block.type == "tool_use" and block.name == tool_name:
-                return block.input
-        raise LogicError("⚠️ Claude did not return the expected structured output.")
+        raise ClaudeOutputError("⚠️ Claude did not return the expected structured output.")
     except LogicError:
         raise
     except anthropic.APITimeoutError as e:
@@ -3060,7 +3079,8 @@ and do NOT report only the base price while dropping the stone top's price.
 - ALWAYS include the original "index" field (copied exactly from the input item) in every \
 output row, so results can be merged back to the correct item afterward.{alt_info_clause}
 
-Respond ONLY with a JSON object of this exact shape (no extra commentary):
+Call the report_price_matches tool once with a JSON object of this shape. Always include \
+"mapped_items". If there are no confident matches, send "mapped_items": [].
 {{
   "mapped_items": [
     {{"index": 0, "unit_price": 350.00, "supplier": "ABC Furniture Co.", \
@@ -3070,16 +3090,16 @@ Respond ONLY with a JSON object of this exact shape (no extra commentary):
 """
 
 
-# Forced tool-call schema for match_prices_bucket's Claude request — see
-# call_claude_json's docstring for why a tool call is used instead of a raw
-# JSON response mode (Claude has none).
+# Strict tool-call schema for the Step 3 price matching response.
 _PRICE_MATCH_INPUT_SCHEMA = {
     "type": "object",
+    "additionalProperties": False,
     "properties": {
         "mapped_items": {
             "type": "array",
             "items": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "index": {"type": "integer", "description": "Original index from the input furniture list."},
                     "unit_price": {"type": "number"},
@@ -3094,11 +3114,13 @@ _PRICE_MATCH_INPUT_SCHEMA = {
         },
         "alt_batch_info": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "sum_of_item_costs": {"type": "number"},
                 "protection_fee": {"type": "number"},
                 "management_fee": {"type": "number"},
             },
+            "required": ["sum_of_item_costs", "protection_fee", "management_fee"],
         },
     },
     "required": ["mapped_items"],
@@ -3145,10 +3167,11 @@ def match_prices_bucket(
         # correct request rarely gets faster on retry.
         timeout=180,
         max_retries=1,
+        strict=True,
     )
     mapped = result.get("mapped_items")
-    if not isinstance(mapped, list):
-        raise LogicError("⚠️ The AI response did not contain a valid 'mapped_items' list.")
+    if not isinstance(mapped, list) or any(not isinstance(item, dict) for item in mapped):
+        raise ClaudeOutputError("Claude ส่งรายการจับคู่ราคา (mapped_items) ในรูปแบบที่ใช้ไม่ได้ กรุณาลองอีกครั้ง")
 
     for item in mapped:
         fixed_price, warn_note = validate_and_fix_price(item.get("unit_price"), supplier_text)
