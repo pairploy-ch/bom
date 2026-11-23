@@ -31,6 +31,7 @@ from .logic import (
     _is_priced_option,
     assign_quotation_labels,
     build_quotation_rows,
+    build_unpriced_items_workbook,
     calculate_alt_loading_factor,
     compute_price_preview,
     extract_alt_batch_info,
@@ -813,6 +814,16 @@ def export_status(house_id: str, body: MappingRowsReplace):
         has_export=True,
         is_stale=current_hash != row["final_excel_source_hash"],
         download_url=f"/api/houses/{house_id}/export/file",
+    )
+
+
+@app.post("/api/houses/{house_id}/export/price-not-found")
+def download_unpriced_items(house_id: str, body: MappingRowsReplace):
+    _get_house_or_404(house_id)
+    return Response(
+        content=build_unpriced_items_workbook([row.model_dump(exclude={"suspicious"}) for row in body.rows]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": _content_disposition("attachment", "price-not-found.xlsx")},
     )
 
 

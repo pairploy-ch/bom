@@ -256,6 +256,9 @@ export const api = {
       json({ rows })
     ),
 
+  downloadUnpricedItems: (id: string, rows: MappingRow[]) =>
+    requestBlob(`/houses/${id}/export/price-not-found`, json({ rows })),
+
   exportFileUrl: (id: string) => `${BASE}/houses/${id}/export/file`,
 
   listExportVersions: (id: string) => request<ExportVersionMeta[]>(`/houses/${id}/exports`),

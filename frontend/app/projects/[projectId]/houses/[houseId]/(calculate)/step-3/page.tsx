@@ -85,10 +85,16 @@ function promptForNewRoom(): string | null {
   return name ? name : null;
 }
 
+function isUnpriced(row: MappingRow): boolean {
+  if (row.order_type === "จัดซื้อ (บวกกำไร 10DK)") return row.other_maker_price <= 0;
+  if (row.order_type === "จัดซื้อ (ราคาจริง ไม่บวกกำไร)") return row.unit_price <= 0;
+  return row.unit_price <= 0 && row.alt_price <= 0 && row.pmay_price <= 0 && row.other_maker_price <= 0;
+}
+
 const BUCKETS = [
   { key: "alt", title: "ALT (สั่งผลิต)", icon: Factory, hint: "" },
   { key: "pmay", title: "P'May (สั่งผลิต)", icon: Factory, hint: "" },
-  { key: "other", title: "Other (สั่งผลิต — เจ้าที่ 3)", icon: Factory, hint: "แข่งราคากับ ALT/P'May เข้า MAX เดียวกัน" },
+  { key: "other", title: "Other (จัดซื้อ บวกกำไร 10DK)", icon: Factory, hint: "" },
   { key: "purchase", title: "เบิกจ่ายตามจริง (จัดซื้อ)", icon: ShoppingCart, hint: "ร้านทั่วไป เช่น SB, Index, IKEA" },
 ] as const;
 type BucketKey = (typeof BUCKETS)[number]["key"];
@@ -190,6 +196,11 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
   const updateRow = (index: number, patch: Partial<MappingRow>) => {
     setRows((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
     setRowsDirty(true);
+  };
+
+  const updatePurchasePrice = (index: number, field: "other_maker_price" | "unit_price", price: number) => {
+    const orderType = field === "other_maker_price" ? "จัดซื้อ (บวกกำไร 10DK)" : "จัดซื้อ (ราคาจริง ไม่บวกกำไร)";
+    updateRow(index, { [field]: price, ...(price > 0 && { order_type: orderType }) });
   };
 
   const handleSaveRows = () => saveRows.mutate(rows);
@@ -323,7 +334,12 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
 
   const suspiciousItems = rows.filter((r) => r.suspicious);
   const mappingGroups = groupMappingRowsByRoom(rows);
-  const notFoundItems = useMemo(() => rows.filter((r) => r.item_name.includes("[Price Not Found]")), [rows]);
+  const notFoundItems = useMemo(
+    () => rows.map((row, index) => ({ row, index })).filter(({ row }) =>
+      isUnpriced(row) && row.item_name.replaceAll("[Price Not Found]", "").trim(),
+    ),
+    [rows],
+  );
   const [notFoundOpen, setNotFoundOpen] = useState(true);
   const hasQuotations = (house.data?.quotation_buckets.length ?? 0) > 0;
 
@@ -339,6 +355,21 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
   });
 
   // --------------------------------------------------------------- export --
+
+  const exportUnpricedItems = useMutation({
+    mutationFn: () => api.downloadUnpricedItems(houseId, notFoundItems.map(({ row }) => row)),
+    onSuccess: (blob) => {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "price-not-found.xlsx";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : "ดาวน์โหลดรายการที่ไม่พบราคาไม่สำเร็จ"),
+  });
 
   const exportExcel = useMutation({
     mutationFn: () =>
@@ -635,8 +666,8 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                       <th className="w-48 py-2 pr-2">ประเภท</th>
                       <th className="w-24 py-2 pr-2">ALT</th>
                       <th className="w-24 py-2 pr-2">P&apos;May</th>
-                      <th className="w-24 py-2 pr-2">Other</th>
-                      <th className="w-24 py-2 pr-2">Unit Price (จัดซื้อ)</th>
+                      <th className="w-24 py-2 pr-2">Other (บวกกำไร)</th>
+                      <th className="w-24 py-2 pr-2">เบิกจ่ายตามจริง</th>
                       <th className="w-28 py-2 pr-2">Supplier</th>
                       <th className="w-10 py-2" />
                     </tr>
@@ -651,17 +682,7 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                           </td>
                         </tr>
                         {group.entries.map(({ row, index: i }) => {
-                          // Badge only when EVERY price source is empty — ต้นทุน ALT,
-                          // ALT+ค่า protect+ค่าขน / ALT+5%+VAT7% (both derived from
-                          // alt_price), P'May, Other maker, and งานจัดซื้อ เบิกจ่ายตามราคาจริง
-                          // (unit_price) — not the AI's "[Price Not Found]" text marker,
-                          // which can be stale if a price was found afterward in a
-                          // different bucket.
-                          const isNotFound =
-                            row.unit_price <= 0 &&
-                            row.alt_price <= 0 &&
-                            row.pmay_price <= 0 &&
-                            row.other_maker_price <= 0;
+                          const isNotFound = isUnpriced(row);
                           return (
                           <tr
                             key={i}
@@ -751,14 +772,14 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                               <Input
                                 type="number"
                                 value={row.other_maker_price}
-                                onChange={(e) => updateRow(i, { other_maker_price: Number(e.target.value) || 0 })}
+                                onChange={(e) => updatePurchasePrice(i, "other_maker_price", Number(e.target.value) || 0)}
                               />
                             </td>
                             <td className="py-1.5 pr-2">
                               <Input
                                 type="number"
                                 value={row.unit_price}
-                                onChange={(e) => updateRow(i, { unit_price: Number(e.target.value) || 0 })}
+                                onChange={(e) => updatePurchasePrice(i, "unit_price", Number(e.target.value) || 0)}
                               />
                             </td>
                             <td className="py-1.5 pr-2">
@@ -793,25 +814,31 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
 
           {notFoundItems.length > 0 && (
             <Card>
-              <button
-                type="button"
-                onClick={() => setNotFoundOpen((v) => !v)}
-                aria-expanded={notFoundOpen}
-                className="flex w-full items-center justify-between gap-4 border-b border-slate-100 px-5 py-4 text-left"
-              >
-                <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
-                  <Search size={16} className="shrink-0 text-slate-400" />
-                  {`ค้นหาราคาในใบเสนอราคาดิบ สำหรับ ${notFoundItems.length} รายการที่ยังไม่พบราคา`}
-                </h2>
-                <ChevronDown
-                  size={16}
-                  className={cn("shrink-0 text-slate-400 transition-transform", notFoundOpen && "rotate-180")}
-                />
-              </button>
+              <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-5 py-4">
+                <button
+                  type="button"
+                  onClick={() => setNotFoundOpen((v) => !v)}
+                  aria-expanded={notFoundOpen}
+                  className="flex flex-1 basis-64 items-center justify-between gap-3 text-left"
+                >
+                  <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
+                    <Search size={16} className="shrink-0 text-slate-400" />
+                    {`ค้นหาราคาในใบเสนอราคาดิบ สำหรับ ${notFoundItems.length} รายการที่ยังไม่พบราคา`}
+                  </h2>
+                  <ChevronDown
+                    size={16}
+                    className={cn("shrink-0 text-slate-400 transition-transform", notFoundOpen && "rotate-180")}
+                  />
+                </button>
+                <Button variant="secondary" onClick={() => exportUnpricedItems.mutate()} disabled={exportUnpricedItems.isPending}>
+                  {exportUnpricedItems.isPending ? <Spinner /> : <Download size={16} />}
+                  ดาวน์โหลด Excel รายการที่ไม่พบราคา
+                </Button>
+              </div>
               {notFoundOpen && (
                 <div className="space-y-4 p-5">
-                  {notFoundItems.map((item, i) => (
-                    <NotFoundSearch key={i} houseId={houseId} itemName={item.item_name} />
+                  {notFoundItems.map(({ row, index }) => (
+                    <NotFoundSearch key={`${index}:${row.item_name}`} houseId={houseId} itemName={row.item_name} />
                   ))}
                 </div>
               )}

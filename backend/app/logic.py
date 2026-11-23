@@ -42,7 +42,8 @@ from docx.oxml.ns import qn
 from docx.shared import Mm, Pt, RGBColor
 from openai import APIError, APITimeoutError, OpenAI, RateLimitError
 from openpyxl.cell import MergedCell
-from openpyxl.styles import Font, PatternFill
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.exceptions import InvalidFileException
 from PIL import Image as PILImage
@@ -166,6 +167,17 @@ def apply_known_price_adjustments(item_name: str, unit_price: float) -> tuple[fl
         surcharge = 4500 + 2000
         return unit_price + surcharge, f"+รีโมท 4,500 +ติดตั้ง 2,000 (โคมไฟห้อยเพดาน) = รวม {unit_price + surcharge:,.0f}"
     return unit_price, ""
+
+
+def _price_for_order_type(row: dict[str, Any], order_type: str) -> tuple[float, str]:
+    unit_price = float(row.get("unit_price") or 0)
+    if order_type == "จัดซื้อ (ราคาจริง ไม่บวกกำไร)":
+        return unit_price, ""
+    if order_type == "จัดซื้อ (บวกกำไร 10DK)":
+        unit_price = float(row.get("other_maker_price") or 0)
+        if unit_price <= 0:
+            return 0, ""
+    return apply_known_price_adjustments(row.get("item_name", ""), unit_price)
 
 
 def detect_alt_or_pmay(supplier: str) -> str:
@@ -409,6 +421,12 @@ def _current_export_source_hash(
     loading_factor = _alt_loading_factor_from_batch(alt_batch_info)
     if loading_factor is not None:
         h.update(f"|alt-loading-factor={loading_factor}".encode("ascii"))
+    if any(
+        _price_for_order_type(row, row.get("order_type", "จัดซื้อ (ราคาจริง ไม่บวกกำไร)"))
+        != apply_known_price_adjustments(row.get("item_name", ""), float(row.get("unit_price") or 0))
+        for row in mapping_rows
+    ):
+        h.update(b"|purchase-price-source")
     return h.hexdigest()
 
 
@@ -565,8 +583,7 @@ def write_mapping_to_excel(
             item_no = 1
             for row in grouped[room]:
                 order_type = row.get("order_type", "จัดซื้อ (ราคาจริง ไม่บวกกำไร)")
-                unit_price = row.get("unit_price", 0) or 0
-                unit_price, adj_note = apply_known_price_adjustments(row.get("item_name", ""), unit_price)
+                unit_price, adj_note = _price_for_order_type(row, order_type)
 
                 item_text = build_item_display_text(
                     row.get("item_name", ""),
@@ -828,8 +845,7 @@ def compute_price_preview(
     for row in rows:
         order_type = row.get("order_type", "จัดซื้อ (ราคาจริง ไม่บวกกำไร)")
         supplier = row.get("supplier", "")
-        raw_unit_price = float(row.get("unit_price", 0) or 0)
-        unit_price, adj_note = apply_known_price_adjustments(row.get("item_name", ""), raw_unit_price)
+        unit_price, adj_note = _price_for_order_type(row, order_type)
         qty = float(row.get("quantity", 0) or 0)
         display_name = build_item_display_text(
             row.get("item_name", ""),
@@ -3231,6 +3247,14 @@ def match_prices_bucket(
     return mapped, alt_info.model_dump() if alt_info is not None else None
 
 
+def _has_mapping_price(row: dict[str, Any]) -> bool:
+    if row.get("order_type") == "จัดซื้อ (บวกกำไร 10DK)":
+        return (row.get("other_maker_price") or 0) > 0
+    if row.get("order_type") != "สั่งผลิต":
+        return (row.get("unit_price") or 0) > 0
+    return any((row.get(field) or 0) > 0 for field in ("unit_price", "alt_price", "pmay_price", "other_maker_price"))
+
+
 def merge_bucket_results(
     furniture_list: list[dict[str, Any]],
     bucket_results: list[tuple[str, list[dict[str, Any]]]],
@@ -3292,7 +3316,6 @@ def merge_bucket_results(
                     autocorrected_total += 1
             elif bucket_label == "OTHER_MAKER":
                 entry["other_maker_price"] = price
-                entry["unit_price"] = price
                 entry["order_type"] = "จัดซื้อ (บวกกำไร 10DK)"
                 if autocorrected:
                     entry["item_name"] += " [ราคา Other ถูกแก้ไขอัตโนมัติ - โปรดตรวจสอบ]"
@@ -3305,13 +3328,7 @@ def merge_bucket_results(
                     autocorrected_total += 1
 
     for entry in final_mapping:
-        has_any_price = (
-            entry["unit_price"] > 0
-            or entry["alt_price"] > 0
-            or entry["pmay_price"] > 0
-            or entry["other_maker_price"] > 0
-        )
-        if not has_any_price and "[Price Not Found]" not in entry["item_name"]:
+        if not _has_mapping_price(entry) and "[Price Not Found]" not in entry["item_name"]:
             entry["item_name"] += " [Price Not Found]"
 
     warning = None
@@ -3330,6 +3347,42 @@ def merge_bucket_results(
 # --------------------------------------------------------------------------------------
 
 SUSPICIOUS_PRICE_THRESHOLD = 100
+
+
+def build_unpriced_items_workbook(rows: list[dict[str, Any]]) -> bytes:
+    """Creates a price-entry sheet from the unresolved rows in the Step 3 draft."""
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Price Not Found"
+    sheet.append(["ชื่อห้อง", "ชื่อรายการ", "สเปก", "ราคา"])
+    for cell in sheet[1]:
+        cell.fill = ROOM_HEADER_FILL
+        cell.font = ROOM_HEADER_FONT
+    for column, width in {"A": 24, "B": 52, "C": 40, "D": 16}.items():
+        sheet.column_dimensions[column].width = width
+
+    wrapped = Alignment(vertical="top", wrap_text=True)
+    row_index = 2
+    for row in rows:
+        item_name = strip_qa_markers(row.get("item_name") or "")
+        if not item_name or _has_mapping_price(row):
+            continue
+        fields = (row.get("room") or "", item_name, row.get("spec") or "")
+        for column, value in enumerate(fields, start=1):
+            cell = sheet.cell(row=row_index, column=column, value=ILLEGAL_CHARACTERS_RE.sub("", value))
+            cell.data_type = "s"
+            cell.alignment = wrapped
+        sheet.cell(row=row_index, column=4).number_format = MONEY_FORMAT
+        row_index += 1
+
+    if row_index == 2:
+        raise LogicError("ไม่มีรายการที่ยังไม่พบราคาให้ส่งออก")
+
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
 
 
 def flag_suspicious_prices(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
