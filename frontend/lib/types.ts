@@ -12,6 +12,12 @@ export const ORDER_TYPES: OrderType[] = [
   "จัดซื้อ (ราคาจริง ไม่บวกกำไร)",
 ];
 
+export const SHORT_ORDER_TYPE_LABELS: Record<OrderType, string> = {
+  "สั่งผลิต": "สั่งผลิต",
+  "จัดซื้อ (บวกกำไร 10DK)": "จัดซื้อบวกกำไร",
+  "จัดซื้อ (ราคาจริง ไม่บวกกำไร)": "จัดซื้อตามจริง",
+};
+
 export interface ColumnMapping {
   supplier_col: string;
   room_col: string;

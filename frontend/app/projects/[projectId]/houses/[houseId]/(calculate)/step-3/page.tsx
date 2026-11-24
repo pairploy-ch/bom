@@ -31,7 +31,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useColumnMapping } from "@/components/ColumnMappingContext";
 import { ExcelStylePreview, previewGrandTotal } from "@/components/ExcelStylePreview";
 import type { ExportVersionMeta, HouseState, MappingRow, OrderType, PreviewResponse } from "@/lib/types";
-import { ORDER_TYPES } from "@/lib/types";
+import { ORDER_TYPES, SHORT_ORDER_TYPE_LABELS } from "@/lib/types";
 import { Alert, Badge, Button, Card, CardHeader, Field, Input, Select, Spinner, cn } from "@/components/ui/primitives";
 import { useToast } from "@/components/ui/Toast";
 
@@ -108,12 +108,6 @@ const ORDER_TYPE_BY_PRICE_FIELD = {
   other_maker_price: "จัดซื้อ (บวกกำไร 10DK)",
   unit_price: "จัดซื้อ (ราคาจริง ไม่บวกกำไร)",
 } as const;
-
-const SHORT_ORDER_TYPE_LABELS: Record<OrderType, string> = {
-  "สั่งผลิต": "สั่งผลิต",
-  "จัดซื้อ (บวกกำไร 10DK)": "จัดซื้อบวกกำไร",
-  "จัดซื้อ (ราคาจริง ไม่บวกกำไร)": "จัดซื้อตามจริง",
-};
 
 function OrderTypePicker({ row, onChange }: { row: MappingRow; onChange: (patch: Partial<MappingRow>) => void }) {
   const selected = row.order_types ?? [row.order_type];

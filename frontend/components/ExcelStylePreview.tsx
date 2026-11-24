@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import type { PreviewPrice, PreviewRow } from "@/lib/types";
+import { SHORT_ORDER_TYPE_LABELS, type PreviewPrice, type PreviewRow } from "@/lib/types";
 
 const fmt = (v: number | undefined, decimals = 0) =>
   v === undefined || v === null ? "" : v.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
@@ -25,8 +25,14 @@ const HEADERS = [
   "หมายเหตุ",
 ];
 
+const PRICE_COLUMNS = [
+  "g_cost", "h_loading", "i_plus_vat", "j_pmay",
+  "k_other", "l_chosen", "m_10dk_price", "n_actual_price",
+] as const;
+
 interface PlannedRow {
   row: PreviewRow;
+  prices: PreviewPrice[];
   isNewRoom: boolean;
   itemNo: number;
   stripe: boolean;
@@ -48,7 +54,7 @@ function planRows(rows: PreviewRow[]): PlannedRow[] {
     }
     itemNo += 1;
     stripeIdx += 1;
-    return { row, isNewRoom, itemNo, stripe: stripeIdx % 2 === 0 };
+    return { row, prices: [row, ...(row.alternatives ?? [])], isNewRoom, itemNo, stripe: stripeIdx % 2 === 0 };
   });
 }
 
@@ -71,7 +77,7 @@ export function ExcelStylePreview({ rows }: { rows: PreviewRow[] }) {
           </tr>
         </thead>
         <tbody>
-          {planned.map(({ row: r, isNewRoom, itemNo, stripe }, i) => (
+          {planned.map(({ row: r, prices, isNewRoom, itemNo, stripe }, i) => (
             <Fragment key={i}>
               {isNewRoom && (
                 <tr className="bg-slate-900 text-white">
@@ -82,24 +88,17 @@ export function ExcelStylePreview({ rows }: { rows: PreviewRow[] }) {
                 </tr>
               )}
               <tr className={stripe ? "bg-white" : "bg-emerald-50"}>
-                <td className="border border-slate-300 px-2 py-1.5 text-left">{r.supplier}</td>
+                <td className="border border-slate-300 px-2 py-1.5 text-left">
+                  {[...new Set(prices.map((price) => price.supplier).filter(Boolean))].join(" / ")}
+                </td>
                 <td className="border border-slate-300 px-2 py-1.5 text-right">{itemNo}</td>
                 <td className="border border-slate-300 px-2 py-1.5 text-left">
                   {displayItemName(r.item_name)}
                   {!!r.alternatives?.length && <span className="mt-0.5 block text-slate-500">ใช้ในยอดรวม</span>}
                 </td>
                 <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.quantity)}</td>
-                <PriceCells price={r} />
+                <PriceCells prices={prices} />
               </tr>
-              {r.alternatives?.map((option) => (
-                <tr key={option.order_type} className="bg-slate-50 text-slate-600">
-                  <td className="border border-slate-300 px-2 py-1.5">{option.supplier}</td>
-                  <td className="border border-slate-300" />
-                  <td className="border border-slate-300 py-1.5 pl-5 pr-2">{option.order_type}</td>
-                  <td className="border border-slate-300" />
-                  <PriceCells price={option} />
-                </tr>
-              ))}
             </Fragment>
           ))}
         </tbody>
@@ -108,17 +107,29 @@ export function ExcelStylePreview({ rows }: { rows: PreviewRow[] }) {
   );
 }
 
-function PriceCells({ price }: { price: PreviewPrice }) {
-  const amounts = [
-    price.g_cost, price.h_loading, price.i_plus_vat, price.j_pmay,
-    price.k_other, price.l_chosen, price.m_10dk_price, price.n_actual_price,
-  ];
+function PriceCells({ prices }: { prices: PreviewPrice[] }) {
   return (
     <>
-      {amounts.map((amount, i) => (
-        <td key={i} className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(amount)}</td>
-      ))}
-      <td className="border border-slate-300 px-2 py-1.5 text-left text-slate-500">{price.auto_note}</td>
+      {PRICE_COLUMNS.map((column) => {
+        const priced = prices.filter((price) => price[column] != null);
+        return (
+          <td key={column} className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">
+            {priced.length > 1 ? (
+              <div className="space-y-1 whitespace-nowrap">
+                {priced.map((price) => (
+                  <div key={price.order_type} className={price === prices[0] ? "font-semibold" : "text-slate-600"}>
+                    <span className="mr-1 text-[10px] font-normal text-slate-600">{SHORT_ORDER_TYPE_LABELS[price.order_type]}</span>
+                    {fmt(price[column])}
+                  </div>
+                ))}
+              </div>
+            ) : fmt(priced[0]?.[column])}
+          </td>
+        );
+      })}
+      <td className="whitespace-pre-line border border-slate-300 px-2 py-1.5 text-left text-slate-500">
+        {[...new Set(prices.map((price) => price.auto_note).filter(Boolean))].join("\n")}
+      </td>
     </>
   );
 }
