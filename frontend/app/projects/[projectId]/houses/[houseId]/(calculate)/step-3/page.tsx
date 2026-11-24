@@ -1,5 +1,6 @@
 "use client";
 
+import { Button as HeroButton, Popover } from "@heroui/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -29,7 +30,7 @@ import { useHouse, houseKey } from "@/hooks/useHouse";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useColumnMapping } from "@/components/ColumnMappingContext";
 import { ExcelStylePreview, previewGrandTotal } from "@/components/ExcelStylePreview";
-import type { ExportVersionMeta, HouseState, MappingRow, PreviewResponse } from "@/lib/types";
+import type { ExportVersionMeta, HouseState, MappingRow, OrderType, PreviewResponse } from "@/lib/types";
 import { ORDER_TYPES } from "@/lib/types";
 import { Alert, Badge, Button, Card, CardHeader, Field, Input, Select, Spinner, cn } from "@/components/ui/primitives";
 import { useToast } from "@/components/ui/Toast";
@@ -44,6 +45,7 @@ const emptyRow = (): MappingRow => ({
   other_maker_price: 0,
   supplier: "",
   order_type: "จัดซื้อ (ราคาจริง ไม่บวกกำไร)",
+  order_types: null,
   spec: "",
   quotation_spec: "",
 });
@@ -90,12 +92,14 @@ function isUnpriced(row: MappingRow): boolean {
 }
 
 function supplierPlaceholder(row: MappingRow): string {
+  if (row.unit_price > 0) return "ระบุชื่อร้านจัดซื้อ";
+  if (row.other_maker_price > 0) return "Other";
   if (row.order_type === "สั่งผลิต") {
-    return [row.alt_price > 0 && "ALT", row.pmay_price > 0 && "P'May", row.other_maker_price > 0 && "Other"]
+    return [row.alt_price > 0 && "ALT", row.pmay_price > 0 && "P'May"]
       .filter(Boolean)
       .join(" / ") || "ระบุชื่อผู้ขาย";
   }
-  return row.order_type === "จัดซื้อ (บวกกำไร 10DK)" && row.other_maker_price > 0 ? "Other" : "ระบุชื่อผู้ขาย";
+  return "ระบุชื่อผู้ขาย";
 }
 
 const ORDER_TYPE_BY_PRICE_FIELD = {
@@ -104,6 +108,65 @@ const ORDER_TYPE_BY_PRICE_FIELD = {
   other_maker_price: "จัดซื้อ (บวกกำไร 10DK)",
   unit_price: "จัดซื้อ (ราคาจริง ไม่บวกกำไร)",
 } as const;
+
+const SHORT_ORDER_TYPE_LABELS: Record<OrderType, string> = {
+  "สั่งผลิต": "สั่งผลิต",
+  "จัดซื้อ (บวกกำไร 10DK)": "จัดซื้อบวกกำไร",
+  "จัดซื้อ (ราคาจริง ไม่บวกกำไร)": "จัดซื้อตามจริง",
+};
+
+function OrderTypePicker({ row, onChange }: { row: MappingRow; onChange: (patch: Partial<MappingRow>) => void }) {
+  const selected = row.order_types ?? [row.order_type];
+
+  const toggle = (type: OrderType, checked: boolean) => {
+    const next = ORDER_TYPES.filter((option) => option === type ? checked : selected.includes(option));
+    onChange({ order_types: next, order_type: next.includes(row.order_type) ? row.order_type : next[0] });
+  };
+
+  return (
+    <Popover>
+      <HeroButton
+        variant="secondary"
+        className="w-full justify-between rounded-lg border border-slate-300 bg-white px-3 font-normal"
+        aria-label={`ประเภท ${row.item_name || "รายการ"}`}
+      >
+        <span className="truncate">
+          {SHORT_ORDER_TYPE_LABELS[row.order_type]}{selected.length > 1 && ` +${selected.length - 1}`}
+        </span>
+        <ChevronDown size={14} className="shrink-0 text-slate-500" />
+      </HeroButton>
+      <Popover.Content placement="bottom start">
+        <Popover.Dialog aria-label="เลือกประเภทสำหรับเปรียบเทียบราคา" className="w-72 max-w-full space-y-3 p-1">
+          <fieldset className="space-y-2">
+            <legend className="pb-2 text-sm font-medium text-slate-900">ประเภทที่แสดงในพรีวิว</legend>
+            {ORDER_TYPES.map((type) => {
+              const checked = selected.includes(type);
+              return (
+                <label key={type} className="flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={checked && selected.length === 1}
+                    onChange={(e) => toggle(type, e.target.checked)}
+                    className="size-4 accent-[var(--accent)]"
+                  />
+                  {type}
+                </label>
+              );
+            })}
+          </fieldset>
+          {selected.length > 1 && (
+            <Field label="ใช้ในยอดรวมและไฟล์ส่งออก">
+              <Select value={row.order_type} onChange={(e) => onChange({ order_type: e.target.value as OrderType })}>
+                {selected.map((type) => <option key={type} value={type}>{type}</option>)}
+              </Select>
+            </Field>
+          )}
+        </Popover.Dialog>
+      </Popover.Content>
+    </Popover>
+  );
+}
 
 const BUCKETS = [
   { key: "alt", title: "ALT (สั่งผลิต)", icon: Factory, hint: "" },
@@ -213,7 +276,18 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
   };
 
   const updatePrice = (index: number, field: keyof typeof ORDER_TYPE_BY_PRICE_FIELD, price: number) => {
-    updateRow(index, { [field]: price, ...(price > 0 && { order_type: ORDER_TYPE_BY_PRICE_FIELD[field] }) });
+    setRows((prev) => prev.map((row, i) => {
+      if (i !== index) return row;
+      const next = { ...row, [field]: price };
+      const type = ORDER_TYPE_BY_PRICE_FIELD[field];
+      const selected = row.order_types ?? [row.order_type];
+      if (price <= 0 || row[field] > 0 || selected.includes(type)) return next;
+      if (isUnpriced(row) && selected.length === 1) {
+        return { ...next, order_type: type, order_types: [type] };
+      }
+      return { ...next, order_types: ORDER_TYPES.filter((option) => option === type || selected.includes(option)) };
+    }));
+    setRowsDirty(true);
   };
 
   const handleSaveRows = () => saveRows.mutate(rows);
@@ -255,7 +329,9 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
   });
 
   const grandTotal = preview.data ? previewGrandTotal(preview.data.rows) : 0;
-  const hasAltPrice = preview.data?.rows.some((row) => row.g_cost != null) ?? false;
+  const hasAltPrice = preview.data?.rows.some((row) =>
+    row.g_cost != null || row.alternatives?.some((option) => option.g_cost != null),
+  ) ?? false;
   // If the user hasn't typed a baseline (the furniture value from the very
   // first quotation) yet, fall back to the current 10DK Price grand total so
   // the 12% fee still computes instead of blocking on a warning. The typed
@@ -647,7 +723,7 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
             <CardHeader
               icon={<Pencil size={16} />}
               title="ตรวจสอบและแก้ไขก่อนบันทึก"
-              description="เลือกประเภทให้ถูกต้องต่อรายการ ตาม 3 วิธีคิดราคา — ดูคำอธิบายในแต่ละช่อง — แก้ไขเสร็จแล้วอย่าลืมกด &quot;บันทึก&quot;"
+              description="เลือกได้หลายประเภทต่อรายการเพื่อเทียบราคา แล้วเลือกประเภทหลักสำหรับยอดรวมและไฟล์ส่งออก กดบันทึกเมื่อแก้ไขเสร็จ"
               right={
                 <div className="flex items-center gap-2">
                   {rowsDirty && <span className="text-xs font-medium text-amber-600">มีการแก้ไขที่ยังไม่บันทึก</span>}
@@ -756,16 +832,7 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                               />
                             </td>
                             <td className="py-1.5 pr-2">
-                              <Select
-                                value={row.order_type}
-                                onChange={(e) => updateRow(i, { order_type: e.target.value as MappingRow["order_type"] })}
-                              >
-                                {ORDER_TYPES.map((t) => (
-                                  <option key={t} value={t}>
-                                    {t}
-                                  </option>
-                                ))}
-                              </Select>
+                              <OrderTypePicker row={row} onChange={(patch) => updateRow(i, patch)} />
                             </td>
                             <td className="py-1.5 pr-2">
                               <Input
@@ -864,7 +931,7 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
 
           {preview.data && preview.data.rows.length > 0 && (
             <Card>
-              <CardHeader icon={<Eye size={16} />} title="Preview ตารางเต็ม (จำลองหน้าตา Excel จริง พร้อมสูตรที่จะผูกให้)" />
+              <CardHeader icon={<Eye size={16} />} title="Preview ตารางเต็มและราคาเปรียบเทียบ" />
               <div className="space-y-4 p-5">
                 {preview.data.warnings.length > 0 && (
                   <div className="space-y-2">
@@ -877,7 +944,7 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                 )}
                 <ExcelStylePreview rows={preview.data.rows} />
                 <p className="text-sm text-slate-600">
-                  ยอดรวมค่าเฟอร์นิเจอร์ (10DK Price + งานจัดซื้อเบิกจ่ายตามราคาจริง):{" "}
+                  ยอดรวมค่าเฟอร์นิเจอร์ตามประเภทหลัก{" "}
                   <strong className="tabular-nums">{grandTotal.toLocaleString("en-US", { maximumFractionDigits: 0 })} บาท</strong>
                 </p>
 
@@ -898,7 +965,7 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                 )}
 
                 <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-4">
-                  <Button onClick={() => exportExcel.mutate()} disabled={!sheetName || exportExcel.isPending}>
+                  <Button onClick={() => exportExcel.mutate()} disabled={rows !== debouncedRows || !preview.isSuccess || exportExcel.isPending}>
                     {exportExcel.isPending ? <Spinner /> : <CheckCircle2 size={16} />}
                     ยืนยันและสร้างไฟล์ Excel
                   </Button>

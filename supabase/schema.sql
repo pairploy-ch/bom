@@ -86,6 +86,7 @@ create table if not exists mapping_rows (
     spec                text not null default ''
 );
 
+alter table mapping_rows add column if not exists order_types text[];
 create index if not exists idx_mapping_house on mapping_rows(house_id, position);
 
 -- ------------------------------------------------------------- quotations --

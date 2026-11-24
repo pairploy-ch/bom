@@ -72,6 +72,7 @@ export interface MappingRow {
   other_maker_price: number;
   supplier: string;
   order_type: OrderType;
+  order_types: OrderType[] | null;
   spec: string;
   quotation_spec: string;
   suspicious?: boolean;
@@ -152,9 +153,8 @@ export interface MatchPricesResponse {
   pdf_files: QuotationBucketMeta[];
 }
 
-// One row from POST /preview — fields present depend on order_type, mirroring
-// the original's Excel-style preview table exactly (same column set).
-export interface PreviewRow {
+// Pricing columns shared by the main row and its comparison prices.
+export interface PreviewPrice {
   room: string;
   item_name: string;
   quantity: number;
@@ -171,6 +171,10 @@ export interface PreviewRow {
   m_10dk_price?: number;
   n_actual_price?: number;
   line_total: number;
+}
+
+export interface PreviewRow extends PreviewPrice {
+  alternatives?: PreviewPrice[];
 }
 
 export interface PreviewResponse {

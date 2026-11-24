@@ -182,6 +182,7 @@ def init_db() -> None:
             -- Extra descriptive text AI found in the supplier's quotation PDF
             -- beyond the item name — distinct from `spec` (ขนาด, from Step 2).
             ALTER TABLE mapping_rows ADD COLUMN IF NOT EXISTS quotation_spec TEXT NOT NULL DEFAULT '';
+            ALTER TABLE mapping_rows ADD COLUMN IF NOT EXISTS order_types TEXT[];
 
             CREATE TABLE IF NOT EXISTS quotation_texts (
                 house_id TEXT NOT NULL REFERENCES houses(id) ON DELETE CASCADE,
@@ -580,8 +581,8 @@ def _replace_mapping_rows(conn: psycopg.Connection, house_id: str, rows: list[di
         """
         INSERT INTO mapping_rows
             (house_id, position, room, item_name, quantity, unit_price,
-             alt_price, pmay_price, other_maker_price, supplier, order_type, spec, quotation_spec)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             alt_price, pmay_price, other_maker_price, supplier, order_type, order_types, spec, quotation_spec)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         [
             (
@@ -596,6 +597,7 @@ def _replace_mapping_rows(conn: psycopg.Connection, house_id: str, rows: list[di
                 float(row.get("other_maker_price") or 0),
                 str(row.get("supplier") or ""),
                 str(row.get("order_type") or DEFAULT_ORDER_TYPE),
+                row.get("order_types"),
                 str(row.get("spec") or ""),
                 str(row.get("quotation_spec") or ""),
             )
@@ -609,7 +611,7 @@ def get_mapping_rows(house_id: str) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT room, item_name, quantity, unit_price, alt_price, pmay_price,
-                   other_maker_price, supplier, order_type, spec, quotation_spec
+                   other_maker_price, supplier, order_type, order_types, spec, quotation_spec
             FROM mapping_rows WHERE house_id = %s ORDER BY position
             """,
             (house_id,),

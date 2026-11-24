@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import type { PreviewRow } from "@/lib/types";
+import type { PreviewPrice, PreviewRow } from "@/lib/types";
 
 const fmt = (v: number | undefined, decimals = 0) =>
   v === undefined || v === null ? "" : v.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
@@ -84,23 +84,42 @@ export function ExcelStylePreview({ rows }: { rows: PreviewRow[] }) {
               <tr className={stripe ? "bg-white" : "bg-emerald-50"}>
                 <td className="border border-slate-300 px-2 py-1.5 text-left">{r.supplier}</td>
                 <td className="border border-slate-300 px-2 py-1.5 text-right">{itemNo}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-left">{displayItemName(r.item_name)}</td>
+                <td className="border border-slate-300 px-2 py-1.5 text-left">
+                  {displayItemName(r.item_name)}
+                  {!!r.alternatives?.length && <span className="mt-0.5 block text-slate-500">ใช้ในยอดรวม</span>}
+                </td>
                 <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.quantity)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.g_cost)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.h_loading)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.i_plus_vat)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.j_pmay)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.k_other)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.l_chosen)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.m_10dk_price)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.n_actual_price)}</td>
-                <td className="border border-slate-300 px-2 py-1.5 text-left text-slate-500">{r.auto_note}</td>
+                <PriceCells price={r} />
               </tr>
+              {r.alternatives?.map((option) => (
+                <tr key={option.order_type} className="bg-slate-50 text-slate-600">
+                  <td className="border border-slate-300 px-2 py-1.5">{option.supplier}</td>
+                  <td className="border border-slate-300" />
+                  <td className="border border-slate-300 py-1.5 pl-5 pr-2">{option.order_type}</td>
+                  <td className="border border-slate-300" />
+                  <PriceCells price={option} />
+                </tr>
+              ))}
             </Fragment>
           ))}
         </tbody>
       </table>
     </div>
+  );
+}
+
+function PriceCells({ price }: { price: PreviewPrice }) {
+  const amounts = [
+    price.g_cost, price.h_loading, price.i_plus_vat, price.j_pmay,
+    price.k_other, price.l_chosen, price.m_10dk_price, price.n_actual_price,
+  ];
+  return (
+    <>
+      {amounts.map((amount, i) => (
+        <td key={i} className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(amount)}</td>
+      ))}
+      <td className="border border-slate-300 px-2 py-1.5 text-left text-slate-500">{price.auto_note}</td>
+    </>
   );
 }
 

@@ -700,6 +700,7 @@ def preview_prices(house_id: str, body: PreviewRequest):
     rows = [r.model_dump(exclude={"suspicious"}) for r in body.rows]
     return compute_price_preview(
         row["excel_bytes"], rows, _col_map(body.column_mapping), body.sheet_name, _get_alt_batch_info(house_id, row),
+        include_alternatives=True,
     )
 
 

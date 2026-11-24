@@ -123,6 +123,11 @@ DEFAULT_10DK_MULTIPLIER = 1.45
 MADE_TO_ORDER = "สั่งผลิต"
 PURCHASE_WITH_MARKUP = "จัดซื้อ (บวกกำไร 10DK)"
 PURCHASE_AT_COST = "จัดซื้อ (ราคาจริง ไม่บวกกำไร)"
+PRICE_FIELDS_BY_ORDER_TYPE = {
+    MADE_TO_ORDER: ("alt_price", "pmay_price"),
+    PURCHASE_WITH_MARKUP: ("other_maker_price",),
+    PURCHASE_AT_COST: ("unit_price",),
+}
 
 
 @dataclass
@@ -173,37 +178,37 @@ def apply_known_price_adjustments(item_name: str, unit_price: float) -> tuple[fl
     return unit_price, ""
 
 
+def resolve_mapping_order_types(row: dict[str, Any]) -> list[str]:
+    """Falls back to priced categories for rows saved before multi-select."""
+    selected = row.get("order_types")
+    if selected:
+        return [order_type for order_type in PRICE_FIELDS_BY_ORDER_TYPE if order_type in selected]
+    available = [
+        order_type for order_type, fields in PRICE_FIELDS_BY_ORDER_TYPE.items()
+        if any((row.get(field) or 0) > 0 for field in fields)
+    ]
+    return available or [row.get("order_type") or PURCHASE_AT_COST]
+
+
 def resolve_mapping_order_type(row: dict[str, Any]) -> str:
-    """Keeps a priced selection, or uses the category of an available price."""
+    """Selects the category used for totals and documents."""
     selected = row.get("order_type") or PURCHASE_AT_COST
-    has_made_price = (row.get("alt_price") or 0) > 0 or (row.get("pmay_price") or 0) > 0
-    has_other_price = (row.get("other_maker_price") or 0) > 0
-    has_actual_price = (row.get("unit_price") or 0) > 0
-    if (
-        (selected == MADE_TO_ORDER and has_made_price)
-        or (selected == PURCHASE_WITH_MARKUP and has_other_price)
-        or (selected == PURCHASE_AT_COST and has_actual_price)
-    ):
-        return selected
-    if has_made_price:
-        return MADE_TO_ORDER
-    if has_other_price:
-        return PURCHASE_WITH_MARKUP
-    if has_actual_price:
-        return PURCHASE_AT_COST
-    return selected
+    choices = resolve_mapping_order_types(row)
+    return selected if selected in choices else choices[0]
 
 
 def _supplier_for_order_type(row: dict[str, Any], order_type: str) -> str:
     supplier = str(row.get("supplier") or "").strip()
-    if supplier:
-        return supplier
+    has_purchase_price = (row.get("unit_price") or 0) > 0
+    has_other_price = (row.get("other_maker_price") or 0) > 0
     if order_type == MADE_TO_ORDER:
-        sources = (("alt_price", "ALT"), ("pmay_price", "P'May"), ("other_maker_price", "Other"))
+        if supplier and not (has_purchase_price or has_other_price):
+            return supplier
+        sources = (("alt_price", "ALT"), ("pmay_price", "P'May"))
         return " / ".join(label for field, label in sources if (row.get(field) or 0) > 0)
-    if order_type == PURCHASE_WITH_MARKUP and (row.get("other_maker_price") or 0) > 0:
-        return "Other"
-    return ""
+    if order_type == PURCHASE_WITH_MARKUP and has_other_price:
+        return "Other" if has_purchase_price else supplier or "Other"
+    return supplier
 
 
 def _price_for_order_type(row: dict[str, Any], order_type: str) -> tuple[float, str]:
@@ -453,7 +458,11 @@ def _current_export_source_hash(
     priced_rows = []
     for row in mapping_rows:
         order_type = resolve_mapping_order_type(row)
-        priced_rows.append({**row, "order_type": order_type, "supplier": _supplier_for_order_type(row, order_type)})
+        priced_row = {**row, "order_type": order_type, "supplier": _supplier_for_order_type(row, order_type)}
+        priced_row.pop("order_types", None)
+        if order_type == MADE_TO_ORDER and (row.get("other_maker_price") or 0) > 0:
+            priced_row["other_maker_price"] = 0
+        priced_rows.append(priced_row)
     h = hashlib.md5()
     h.update(excel_bytes or b"")
     h.update(json.dumps(priced_rows, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8"))
@@ -644,7 +653,6 @@ def write_mapping_to_excel(
                 if order_type == MADE_TO_ORDER:
                     alt_price = row.get("alt_price", 0) or 0
                     pmay_price = row.get("pmay_price", 0) or 0
-                    other_maker_price = row.get("other_maker_price", 0) or 0
                     r = current_row
 
                     if alt_price > 0:
@@ -658,10 +666,7 @@ def write_mapping_to_excel(
                     if pmay_price > 0:
                         ws.cell(row=r, column=j_idx).value = f"=({pmay_price}*{i_ref})"
                         ws.cell(row=r, column=j_idx).number_format = MONEY_FORMAT
-                    if other_maker_price > 0:
-                        ws.cell(row=r, column=k_idx).value = f"=({other_maker_price}*{i_ref})"
-                        ws.cell(row=r, column=k_idx).number_format = MONEY_FORMAT
-                    has_priced_option = pmay_price > 0 or other_maker_price > 0 or (alt_price > 0 and h_ref is not None)
+                    has_priced_option = pmay_price > 0 or (alt_price > 0 and h_ref is not None)
                     if col_map.generate_formulas and has_priced_option:
                         ws.cell(row=r, column=l_idx).value = f"=MAX({col_map.formula_i_col}{r}:{k_col}{r})"
                         ws.cell(row=r, column=l_idx).number_format = MONEY_FORMAT
@@ -670,7 +675,7 @@ def write_mapping_to_excel(
                         ws.cell(row=r, column=q_idx).value = f"={col_map.formula_m_col}{r}"
                         ws.cell(row=r, column=q_idx).number_format = MONEY_FORMAT
 
-                elif order_type == PURCHASE_WITH_MARKUP:
+                elif order_type == PURCHASE_WITH_MARKUP and unit_price > 0:
                     if col_map.generate_formulas:
                         r = current_row
                         ws.cell(row=r, column=k_idx).value = f"=({unit_price}*{i_ref})"
@@ -685,7 +690,7 @@ def write_mapping_to_excel(
                         ws.cell(row=current_row, column=k_idx).value = unit_price
                         ws.cell(row=current_row, column=k_idx).number_format = MONEY_FORMAT
 
-                else:  # "จัดซื้อ (ราคาจริง ไม่บวกกำไร)"
+                elif order_type == PURCHASE_AT_COST:
                     ws.cell(row=current_row, column=purchased_price_idx).value = unit_price
                     ws.cell(row=current_row, column=purchased_price_idx).number_format = MONEY_FORMAT
                     if col_map.generate_formulas:
@@ -856,6 +861,8 @@ def compute_price_preview(
     col_map: ColumnMapping,
     sheet_name: str,
     alt_batch_info: dict[str, Any] | None = None,
+    *,
+    include_alternatives: bool = False,
 ) -> dict[str, Any]:
     """Replicates the Excel formula chain for the review table."""
     wb = load_workbook_from_bytes(excel_bytes)
@@ -875,8 +882,7 @@ def compute_price_preview(
     def roundup_thousand(x: float) -> float:
         return math.ceil(x / 1000.0) * 1000.0
 
-    for row in rows:
-        order_type = resolve_mapping_order_type(row)
+    def price_row(row: dict[str, Any], order_type: str) -> dict[str, Any]:
         supplier = _supplier_for_order_type(row, order_type)
         unit_price, adj_note = _price_for_order_type(row, order_type)
         qty = float(row.get("quantity", 0) or 0)
@@ -898,7 +904,6 @@ def compute_price_preview(
         if order_type == MADE_TO_ORDER:
             alt_price = float(row.get("alt_price", 0) or 0)
             pmay_price = float(row.get("pmay_price", 0) or 0)
-            other_maker_price = float(row.get("other_maker_price", 0) or 0)
             i_val = None
             if alt_price > 0:
                 g = alt_price
@@ -911,31 +916,39 @@ def compute_price_preview(
                 j_val = pmay_price * i_mult
                 out.update({"j_pmay": j_val})
 
-            k_val = None
-            if other_maker_price > 0:
-                k_val = other_maker_price * i_mult
-                out.update({"k_other": k_val})
-
-            candidates = [v for v in (i_val, j_val, k_val) if v is not None]
+            candidates = [v for v in (i_val, j_val) if v is not None]
             l = max(candidates) if candidates else None
             m = roundup_thousand(l * m_mult) if l is not None else None
             out.update({"l_chosen": l, "m_10dk_price": m})
-        elif order_type == PURCHASE_WITH_MARKUP:
+        elif order_type == PURCHASE_WITH_MARKUP and unit_price > 0:
             k = unit_price * i_mult
             l = k
             m = roundup_thousand(l * m_mult)
             out.update({"k_other": k, "l_chosen": l, "m_10dk_price": m})
-        else:
+        elif order_type == PURCHASE_AT_COST:
             out.update({"n_actual_price": unit_price})
         # M (10DK Price) and N (จัดซื้อ actual price) are already lot totals for
         # this line, not per-unit — do NOT multiply by qty (matches every other
         # total in the app: _quotation_row_totals, main.py's _quotation_totals,
         # QuotationPreview.tsx's quotationTotals — all sum these as-is).
         out["line_total"] = out.get("m_10dk_price") or out.get("n_actual_price") or 0
-        preview.append(out)
+        return out
+
+    has_alt_price = False
+    for row in rows:
+        order_type = resolve_mapping_order_type(row)
+        primary = price_row(row, order_type)
+        alternatives = [
+            price_row(row, choice) for choice in resolve_mapping_order_types(row)
+            if choice != order_type
+        ] if include_alternatives else []
+        if alternatives:
+            primary["alternatives"] = alternatives
+        has_alt_price = has_alt_price or any("g_cost" in option for option in (primary, *alternatives))
+        preview.append(primary)
 
     warnings: list[str] = []
-    if h_mult is None and any("g_cost" in row for row in preview):
+    if h_mult is None and has_alt_price:
         warnings.append(
             f"ยังไม่มี Loading Factor ALT ที่ช่อง {col_map.formula_h_col}{col_map.multiplier_anchor_row} "
             "กรอกต้นทุนรวม ค่า Protection และค่าดำเนินการในการ์ด Loading Factor (ALT) เพื่อคำนวณราคา ALT"
@@ -3370,7 +3383,8 @@ def merge_bucket_results(
             elif bucket_label == "OTHER_MAKER":
                 entry["other_maker_price"] = price
                 entry["order_type"] = "จัดซื้อ (บวกกำไร 10DK)"
-                entry["supplier"] = str(row.get("supplier") or "").strip()
+                if entry["unit_price"] <= 0:
+                    entry["supplier"] = str(row.get("supplier") or "").strip()
                 if autocorrected:
                     entry["item_name"] += " [ราคา Other ถูกแก้ไขอัตโนมัติ - โปรดตรวจสอบ]"
                     autocorrected_total += 1
@@ -3441,7 +3455,7 @@ def build_unpriced_items_workbook(rows: list[dict[str, Any]]) -> bytes:
 
 def prepare_mapping_rows_for_review(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    Resolves the category for each row and flags prices below the review threshold.
+    Resolves the selected categories and flags prices below the review threshold.
     """
     out = []
     for item in rows:
@@ -3452,5 +3466,10 @@ def prepare_mapping_rows_for_review(rows: list[dict[str, Any]]) -> list[dict[str
             float(item.get("other_maker_price", 0) or 0),
         ]
         suspicious = any(0 < p < SUSPICIOUS_PRICE_THRESHOLD for p in prices)
-        out.append({**item, "order_type": resolve_mapping_order_type(item), "suspicious": suspicious})
+        out.append({
+            **item,
+            "order_type": resolve_mapping_order_type(item),
+            "order_types": resolve_mapping_order_types(item),
+            "suspicious": suspicious,
+        })
     return out

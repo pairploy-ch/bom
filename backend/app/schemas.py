@@ -55,7 +55,9 @@ class MappingRow(BaseModel):
     pmay_price: float = 0
     other_maker_price: float = 0
     supplier: str = ""
+    # The primary type drives totals and exports. The list controls comparisons.
     order_type: OrderType = "จัดซื้อ (ราคาจริง ไม่บวกกำไร)"
+    order_types: list[OrderType] | None = Field(default=None, min_length=1)
     spec: str = ""
     # Extra descriptive text the AI found in the supplier's quotation PDF for
     # this matched item, beyond just its name (e.g. material/construction
