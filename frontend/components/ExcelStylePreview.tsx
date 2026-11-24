@@ -94,10 +94,8 @@ export function ExcelStylePreview({ rows }: { rows: PreviewRow[] }) {
                 <td className="border border-slate-300 px-2 py-1.5 text-right">{itemNo}</td>
                 <td className="border border-slate-300 px-2 py-1.5 text-left">
                   {displayItemName(r.item_name)}
-                  {!!r.alternatives?.length && (
-                    <span className="mt-0.5 block text-slate-500">
-                      {r.order_type === "จัดซื้อ (ราคาจริง ไม่บวกกำไร)" ? "ใช้ยอดเบิกจ่ายตามจริง" : "ใช้ยอด 10DK Price"}
-                    </span>
+                  {!!r.alternatives?.length && r.order_type === "จัดซื้อ (ราคาจริง ไม่บวกกำไร)" && (
+                    <span className="mt-0.5 block text-slate-500">ใช้ยอดเบิกจ่ายตามจริง</span>
                   )}
                 </td>
                 <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.quantity)}</td>
