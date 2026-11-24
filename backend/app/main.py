@@ -694,6 +694,7 @@ def search_quotation_text(house_id: str, query: str):
 
 @app.post("/api/houses/{house_id}/preview")
 def preview_prices(house_id: str, body: PreviewRequest):
+    """Compares ALT, P'May, and Other and returns one chosen price per item."""
     row = _get_house_or_404(house_id)
     if row["excel_bytes"] is None:
         raise HTTPException(400, "Upload the Excel template (Step 1) first.")

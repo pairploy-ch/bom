@@ -176,10 +176,10 @@ export interface PreviewPrice {
   l_chosen?: number;
   m_10dk_price?: number;
   n_actual_price?: number;
-  line_total: number;
 }
 
 export interface PreviewRow extends PreviewPrice {
+  line_total: number;
   alternatives?: PreviewPrice[];
 }
 

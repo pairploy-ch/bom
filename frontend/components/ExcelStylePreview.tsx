@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { SHORT_ORDER_TYPE_LABELS, type PreviewPrice, type PreviewRow } from "@/lib/types";
+import type { PreviewPrice, PreviewRow } from "@/lib/types";
 
 const fmt = (v: number | undefined, decimals = 0) =>
   v === undefined || v === null ? "" : v.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
@@ -94,7 +94,11 @@ export function ExcelStylePreview({ rows }: { rows: PreviewRow[] }) {
                 <td className="border border-slate-300 px-2 py-1.5 text-right">{itemNo}</td>
                 <td className="border border-slate-300 px-2 py-1.5 text-left">
                   {displayItemName(r.item_name)}
-                  {!!r.alternatives?.length && <span className="mt-0.5 block text-slate-500">ใช้ในยอดรวม</span>}
+                  {!!r.alternatives?.length && (
+                    <span className="mt-0.5 block text-slate-500">
+                      {r.order_type === "จัดซื้อ (ราคาจริง ไม่บวกกำไร)" ? "ใช้ยอดเบิกจ่ายตามจริง" : "ใช้ยอด 10DK Price"}
+                    </span>
+                  )}
                 </td>
                 <td className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">{fmt(r.quantity)}</td>
                 <PriceCells prices={prices} />
@@ -111,19 +115,10 @@ function PriceCells({ prices }: { prices: PreviewPrice[] }) {
   return (
     <>
       {PRICE_COLUMNS.map((column) => {
-        const priced = prices.filter((price) => price[column] != null);
+        const amounts = prices.map((price) => price[column]).filter((amount) => amount != null);
         return (
           <td key={column} className="border border-slate-300 px-2 py-1.5 text-right tabular-nums">
-            {priced.length > 1 ? (
-              <div className="space-y-1 whitespace-nowrap">
-                {priced.map((price) => (
-                  <div key={price.order_type} className={price === prices[0] ? "font-semibold" : "text-slate-600"}>
-                    <span className="mr-1 text-[10px] font-normal text-slate-600">{SHORT_ORDER_TYPE_LABELS[price.order_type]}</span>
-                    {fmt(price[column])}
-                  </div>
-                ))}
-              </div>
-            ) : fmt(priced[0]?.[column])}
+            {amounts.length > 0 ? fmt(Math.max(...amounts)) : ""}
           </td>
         );
       })}

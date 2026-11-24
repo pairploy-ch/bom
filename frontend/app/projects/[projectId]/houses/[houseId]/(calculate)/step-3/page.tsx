@@ -150,7 +150,7 @@ function OrderTypePicker({ row, onChange }: { row: MappingRow; onChange: (patch:
             })}
           </fieldset>
           {selected.length > 1 && (
-            <Field label="ใช้ในยอดรวมและไฟล์ส่งออก">
+            <Field label="ใช้ในยอดรวมและไฟล์ส่งออก" hint="10DK Price คำนวณจากราคาสูงสุดของ ALT, P’May และ Other ที่เลือก">
               <Select value={row.order_type} onChange={(e) => onChange({ order_type: e.target.value as OrderType })}>
                 {selected.map((type) => <option key={type} value={type}>{type}</option>)}
               </Select>
