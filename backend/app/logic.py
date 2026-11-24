@@ -199,6 +199,10 @@ def resolve_mapping_order_type(row: dict[str, Any]) -> str:
 
 def _supplier_for_order_type(row: dict[str, Any], order_type: str) -> str:
     supplier = str(row.get("supplier") or "").strip()
+    if "/" in supplier:
+        names = [name.strip() for name in supplier.split("/") if name.strip()]
+        if len(names) > 1:
+            return " / ".join(dict.fromkeys(names))
     has_purchase_price = (row.get("unit_price") or 0) > 0
     has_other_price = (row.get("other_maker_price") or 0) > 0
     if order_type == MADE_TO_ORDER:

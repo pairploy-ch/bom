@@ -54,7 +54,7 @@ class MappingRow(BaseModel):
     alt_price: float = 0
     pmay_price: float = 0
     other_maker_price: float = 0
-    supplier: str = ""
+    supplier: str = Field(default="", description="Supplier name or multiple names separated by a slash.")
     # The primary type drives totals and exports. The list controls comparisons.
     order_type: OrderType = "จัดซื้อ (ราคาจริง ไม่บวกกำไร)"
     order_types: list[OrderType] | None = Field(default=None, min_length=1)

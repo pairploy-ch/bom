@@ -751,7 +751,12 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                       <th className="w-24 py-2 pr-2">P&apos;May</th>
                       <th className="w-24 py-2 pr-2">Other (บวกกำไร)</th>
                       <th className="w-24 py-2 pr-2">เบิกจ่ายตามจริง</th>
-                      <th className="w-28 py-2 pr-2">Supplier</th>
+                      <th className="w-36 py-2 pr-2">
+                        Supplier
+                        <span id="supplier-entry-hint" className="mt-0.5 block font-normal normal-case tracking-normal">
+                          คั่นชื่อด้วย / เช่น ALT / ช่างชัย
+                        </span>
+                      </th>
                       <th className="w-10 py-2" />
                     </tr>
                   </thead>
@@ -860,6 +865,8 @@ function Step3Content({ houseId, initial }: { houseId: string; initial: HouseSta
                               <Input
                                 value={row.supplier}
                                 placeholder={supplierPlaceholder(row)}
+                                aria-label={`Supplier ${row.item_name || "รายการ"}`}
+                                aria-describedby="supplier-entry-hint"
                                 onChange={(e) => updateRow(i, { supplier: e.target.value })}
                               />
                             </td>
